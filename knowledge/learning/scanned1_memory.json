@@ -1,0 +1,13 @@
+{
+  "lessons": [
+    "The OCR quality of the source text is extremely poor, leading to numerous discrepancies in dates, codes, and monetary values. Many values appear to have been 'corrected' by the model based on context or image analysis, but this results in mismatches with the provided text. A higher quality source document or more robust OCR would be necessary for accurate extraction.",
+    "Pay close attention to summary and total tables, as they often contain significant OCR errors (e.g., `5391.00` for `391.06`, `+$601.47` for `-$861.47`).",
+    "Reversal lines are particularly prone to error, especially in the `total_charge` field, where the source text sometimes shows a positive value for a negative transaction.",
+    "A systematic error occurred where data from the 'Explanation Code(s)' column was placed in the 'modifiers' field. Ensure correct mapping of source columns to JSON fields.",
+    "Multiple OCR errors on numeric values were found (e.g., 9116.83 vs 116.83, 556.83 vs 56.83, 313.09 vs 18.09). Double-check numeric transcriptions, especially when they seem unusually large.",
+    "Pay close attention to the signs of financial values. Several negative charges were extracted as positive, and a positive total provider discount was extracted as negative.",
+    "Verify column alignment for patient obligation amounts to distinguish between 'Copay', 'Coinsurance', and 'Deductible'.",
+    "The source text provided is heavily corrupted with OCR errors. The JSON has attempted to correct many of these errors based on context, arithmetic, and pattern recognition. While this makes the JSON more accurate to the likely original document, it creates a large number of discrepancies when compared strictly to the provided text. Future audits should clarify whether to validate against the provided text verbatim or against a corrected/interpreted version."
+  ],
+  "layout_patterns": {}
+}

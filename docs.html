@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EOB Agentic Solution | Architecture Documentation</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Outfit:wght@400;600;700&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --primary: #6366f1;
+            --secondary: #a855f7;
+            --bg: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --glass-border: rgba(255, 255, 255, 0.1);
+            --accent-blue: #38bdf8;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            line-height: 1.6;
+            overflow-x: hidden;
+            background-image:
+                radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.15) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(168, 85, 247, 0.15) 0%, transparent 40%);
+            background-attachment: fixed;
+        }
+
+        h1,
+        h2,
+        h3 {
+            font-family: 'Outfit', sans-serif;
+            color: #fff;
+            margin-bottom: 1rem;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 4rem 2rem;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 5rem;
+        }
+
+        header h1 {
+            font-size: 3.5rem;
+            background: linear-gradient(to right, var(--accent-blue), var(--secondary));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 0.5rem;
+        }
+
+        header p {
+            color: var(--text-muted);
+            font-size: 1.2rem;
+        }
+
+        .section {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 24px;
+            padding: 3rem;
+            margin-bottom: 3rem;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .section:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        h2 {
+            font-size: 2rem;
+            border-bottom: 2px solid var(--primary);
+            display: inline-block;
+            margin-bottom: 2rem;
+            padding-bottom: 0.5rem;
+        }
+
+        .visual-container {
+            width: 100%;
+            border-radius: 16px;
+            overflow: hidden;
+            background: rgba(0, 0, 0, 0.3);
+            margin: 2rem 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 2rem;
+        }
+
+        .visual-container img {
+            max-width: 100%;
+            border-radius: 12px;
+            box-shadow: 0 0 50px rgba(99, 102, 241, 0.2);
+        }
+
+        .tech-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+        }
+
+        .tech-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+        }
+
+        .tech-card h3 {
+            color: var(--accent-blue);
+            font-size: 1.25rem;
+            margin-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .tech-card ul {
+            list-style: none;
+        }
+
+        .tech-card li {
+            margin-bottom: 1rem;
+            font-size: 0.95rem;
+        }
+
+        .tech-card code {
+            background: rgba(0, 0, 0, 0.4);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            color: var(--primary);
+            font-weight: 600;
+        }
+
+        .tech-card p.description {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-style: italic;
+            margin-top: 0.25rem;
+        }
+
+        .mermaid {
+            background: white;
+            padding: 2rem;
+            border-radius: 16px;
+            margin: 2rem 0;
+        }
+
+        pre {
+            background: #1e1e1e;
+            padding: 1.5rem;
+            border-radius: 12px;
+            overflow-x: auto;
+            border: 1px solid var(--glass-border);
+            margin: 1.5rem 0;
+        }
+
+        code {
+            font-family: 'Fira Code', 'Courier New', monospace;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 99px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-right: 0.5rem;
+            background: var(--primary);
+            color: #fff;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 4rem;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 2rem 1rem;
+            }
+
+            header h1 {
+                font-size: 2.5rem;
+            }
+
+            .section {
+                padding: 1.5rem;
+            }
+        }
+
+        /* Optimization for PDF/Print */
+        @media print {
+            body {
+                background: white !important;
+                color: black !important;
+            }
+
+            .section {
+                background: white !important;
+                border: 1px solid #ccc !important;
+                box-shadow: none !important;
+                break-inside: avoid;
+                color: black !important;
+                backdrop-filter: none !important;
+            }
+
+            .tech-card {
+                background: #f9f9f9 !important;
+                border: 1px solid #ddd !important;
+                color: black !important;
+            }
+
+            header h1 {
+                background: none !important;
+                -webkit-text-fill-color: black !important;
+                color: black !important;
+            }
+
+            .badge {
+                border: 1px solid #000 !important;
+                color: #000 !important;
+                background: #eee !important;
+            }
+
+            .mermaid {
+                border: 1px solid #eee !important;
+            }
+
+            pre {
+                background: #f4f4f4 !important;
+                color: black !important;
+                border: 1px solid #ddd !important;
+            }
+
+            code {
+                color: #d63384 !important;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <header>
+            <h1>EOB Agentic Solution</h1>
+            <p>Interactive Architecture & Technical Documentation</p>
+        </header>
+
+        <!-- 1. Overview -->
+        <section class="section">
+            <h2>1. Overview</h2>
+            <p>The EOB Agentic Solution is a state-of-the-art <strong>FastAPI</strong> service designed to extract
+                high-accuracy structured data from complex medicinal insurance claims (VSP, EyeMed, etc.).</p>
+            <div style="display: flex; gap: 1rem; margin-top: 2rem; flex-wrap: wrap;">
+                <div class="tech-card" style="flex: 1; min-width: 250px;">
+                    <h3 style="color: var(--primary);">🛡️ Self-Healing</h3>
+                    <p style="font-size: 0.9rem;">Automatic Auditor-Critic loops ensure 100% data integrity without
+                        human intervention.</p>
+                </div>
+                <div class="tech-card" style="flex: 1; min-width: 250px;">
+                    <h3 style="color: var(--secondary);">🧠 Deep Context</h3>
+                    <p style="font-size: 0.9rem;">Remembers document history across batches to resolve hierarchical
+                        claim dependencies.</p>
+                </div>
+                <div class="tech-card" style="flex: 1; min-width: 250px;">
+                    <h3 style="color: var(--accent-blue);">⚡ Massive Scale</h3>
+                    <p style="font-size: 0.9rem;">Elastic chunking allows processing of 100+ page PDFs with consistent
+                        sub-second page throughput.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- New: Journey of a Request -->
+        <section class="section">
+            <h2>2. The Journey of a Request</h2>
+            <div style="position: relative; padding-left: 2rem; border-left: 2px dashed var(--glass-border);">
+                <div style="margin-bottom: 2rem;">
+                    <h3 style="font-size: 1.1rem; color: var(--accent-blue);"><span class="badge"
+                            style="background: var(--accent-blue);">01</span> Ingestion & Synthesis</h3>
+                    <p style="font-size: 0.95rem; color: var(--text-muted);">The API receives the PDF.
+                        <code>FormatLoader</code> dynamically binds Pydantic schemas, and <code>PDFProcessor</code>
+                        prepares structural grids using Azure AI.
+                    </p>
+                </div>
+                <div style="margin-bottom: 2rem;">
+                    <h3 style="font-size: 1.1rem; color: var(--primary);"><span class="badge">02</span> Multimodal
+                        Analysis</h3>
+                    <p style="font-size: 0.95rem; color: var(--text-muted);">The system fuses OCR text with high-res
+                        visual snapshots. This allows the agents to "see" the document layout and table borders
+                        perfectly.</p>
+                </div>
+                <div style="margin-bottom: 2rem;">
+                    <h3 style="font-size: 1.1rem; color: var(--secondary);"><span class="badge"
+                            style="background: var(--secondary);">03</span> The Agentic Crucible</h3>
+                    <p style="font-size: 0.95rem; color: var(--text-muted);">LangGraph orchestrates the feedback loop:
+                        Extractor &rarr; Auditor &rarr; Critic. Missing values are detected and re-extracted
+                        automatically.</p>
+                </div>
+                <div>
+                    <h3 style="font-size: 1.1rem; color: #10b981;"><span class="badge"
+                            style="background: #10b981;">04</span> Final Materialization</h3>
+                    <p style="font-size: 0.95rem; color: var(--text-muted);">Results are aggregated, totals are
+                        calculated, and the final validated JSON is delivered to the client and saved locally.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 2. Visual Architecture -->
+        <section class="section">
+            <h2>2. Visual Architecture</h2>
+            <h3>3D Conceptual Layer Model</h3>
+            <div class="visual-container">
+                <!-- Using the local path to the generated image -->
+                <img src="C:/Users/mahesh_s/.gemini/antigravity/brain/ec562d2e-4d20-4209-a365-ee3e05e81f1b/architectural_diagram_3d_1773040743595.png"
+                    alt="3D Architecture">
+            </div>
+
+            <h3 style="margin-top: 3rem;">Detailed Execution Flow (LangGraph)</h3>
+            <div class="mermaid">
+                graph TD
+                A[Start: main.py] --> B[PDFProcessor: Extract Text/Tables]
+                B --> C{LangGraph Workflow}
+
+                subgraph "Agentic Loop (extraction_graph.py)"
+                C --> D[Extraction Agent: Generate JSON]
+                D --> E[Auditor Agent: Review Quality]
+                E --> F{Issues Found?}
+                F -- Yes --> G[Critic Agent: Create Instructions]
+                G --> D
+                F -- No --> H[Final Batch JSON]
+                end
+
+                H --> I[FormatLoader: Map to Domain Schema]
+                I --> J[Save to responses/]
+                J --> K[End: API Return]
+            </div>
+        </section>
+
+        <!-- 3. Directory Layout -->
+        <section class="section">
+            <h2>3. Project Registry</h2>
+            <pre><code>project_root/
+├── main.py                  # API Entrypoint
+├── pdf_processor.py         # Azure Document Intelligence
+├── agents/                  # The "Brain" (LangGraph + Agents)
+├── formats/                 # Provider-specific Schemas
+└── responses/               # Extracted Results</code></pre>
+        </section>
+
+        <!-- 10. Techie Guide -->
+        <section class="section">
+            <h2>4. Technical Code Map</h2>
+            <div class="tech-grid">
+                <div class="tech-card">
+                    <h3>⚙️ Infrastructure</h3>
+                    <ul>
+                        <li>
+                            <code>main.py</code>
+                            <p class="description">FastAPI routes and overall orchestration.</p>
+                        </li>
+                        <li>
+                            <code>config.py</code>
+                            <p class="description">Global settings and provider model selection.</p>
+                        </li>
+                    </ul>
+                </div>
+                <div class="tech-card">
+                    <h3>🧠 Intelligence</h3>
+                    <ul>
+                        <li>
+                            <code>agents/extraction_graph.py</code>
+                            <p class="description">The core LangGraph StateGraph logic.</p>
+                        </li>
+                        <li>
+                            <code>agents/gemini_agent.py</code>
+                            <p class="description">The heavy-lifting LLM implementation.</p>
+                        </li>
+                    </ul>
+                </div>
+                <div class="tech-card">
+                    <h3>📄 Extraction</h3>
+                    <ul>
+                        <li>
+                            <code>pdf_processor.py</code>
+                            <p class="description">Azure DI integration for structural parsing.</p>
+                        </li>
+                        <li>
+                            <code>formats/</code>
+                            <p class="description">Collection of Pydantic models for VSP/EyeMed.</p>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3 style="margin-top: 3rem; margin-bottom: 2rem;">🤖 The Agent Squad</h3>
+            <div class="tech-grid">
+                <div class="tech-card">
+                    <h3><span class="badge">Orchestrator</span> <code>extraction_graph.py</code></h3>
+                    <p>The "Conductor". Uses <strong>LangGraph</strong> to route data between agents in a cyclic
+                        feedback loop, managing the state and retry limits.</p>
+                </div>
+                <div class="tech-card">
+                    <h3><span class="badge">Extractor</span> <code>gemini_agent.py</code></h3>
+                    <p>The "Muscle". Multi-modal extraction using <strong>Gemini 1.5 Pro</strong>. Handles continuation
+                        context and learning memory.</p>
+                </div>
+                <div class="tech-card">
+                    <h3><span class="badge">Auditor</span> <code>auditor_agent.py</code></h3>
+                    <p>The "Inspector". Acts as a fresh eye, comparing the extracted result against the source PDF to
+                        find discrepancies.</p>
+                </div>
+                <div class="tech-card">
+                    <h3><span class="badge">Critic</span> <code>critic_agent.py</code></h3>
+                    <p>The "Coach". Converts Auditor issues into clear, numbered improvement instructions for the next
+                        loop.</p>
+                </div>
+                <div class="tech-card">
+                    <h3><span class="badge">Manager</span> <code>agent_factory.py</code></h3>
+                    <p>The "HR". Reads config to hire (instantiate) either Gemini or Claude for the various agent roles.
+                    </p>
+                </div>
+                <div class="tech-card">
+                    <h3><span class="badge">Generator</span> <code>format_generator.py</code></h3>
+                    <p>The "Onboarder". Automatically analyzes new PDF types and generates the Python Pydantic format
+                        code.</p>
+                </div>
+            </div>
+        </section>
+
+        <div class="footer">
+            Generated by Antigravity AI &bull; 2026
+        </div>
+    </div>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: true,
+            theme: 'base',
+            themeVariables: {
+                primaryColor: '#6366f1',
+                primaryTextColor: '#fff',
+                primaryBorderColor: '#a855f7',
+                lineColor: '#38bdf8',
+                secondaryColor: '#0f172a',
+                tertiaryColor: '#1e293b'
+            }
+        });
+        // Signal for automation tools
+        window.addEventListener('load', () => {
+            console.log("PAGE_LOAD_COMPLETE");
+            setTimeout(() => {
+                document.body.classList.add('mermaid-ready');
+                console.log("MERMAID_READY");
+            }, 2000); // Buffer for rendering
+        });
+    </script>
+</body>
+
+</html>

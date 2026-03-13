@@ -1,0 +1,7 @@
+{
+  "lessons": [
+    "Ensure that string values are extracted exactly as they appear in the source document, including leading or trailing whitespace, unless schema rules specifically mandate trimming.",
+    "When an adjustment code in the glossary has a 'Note:', the note content should be extracted to the `notes` field, not appended to the `description` field. This was handled correctly for code CO-59 but incorrectly for CO-45."
+  ],
+  "layout_patterns": {}
+}

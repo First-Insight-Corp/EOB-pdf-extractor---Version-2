@@ -1,0 +1,20 @@
+{
+  "lessons": [
+    "Pay close attention to the signs on financial values, especially for provider discounts in total rows and on reversal service lines. The source document is inconsistent, but the JSON should follow a consistent logic (e.g., negative for discounts).",
+    "Calculated values, such as the provider discount on one of the service lines, should be double-checked against the source text. If a value is present in the source, it should be extracted, even if it appears incorrect. The processing notes should detail any computational logic used.",
+    "The model is frequently truncating trailing zeros and punctuation from financial values, leading to non-verbatim extractions. This needs to be corrected to ensure full fidelity with the source text.",
+    "Care should be taken to transcribe verbatim, including OCR errors like 'Plm' instead of 'Plan', or 'S\u1ed0.co.' instead of '0.00'. The processing notes are contradictory, stating verbatim extraction while the output shows normalization.",
+    "Complex OCR errors in financial fields (e.g., '$$2.32}', '51G.93!') are being misinterpreted or normalized instead of being transcribed as-is.",
+    "The OCR has significant trouble with currency symbols ($), often reading them as '5', 'S', or other characters. It also struggles with negative signs, sometimes missing them entirely. All monetary fields need careful verification.",
+    "There is a persistent structural error where values from the 'Explanation Code(s)' column are incorrectly placed in the 'modifiers' field. The model needs to be retrained to correctly differentiate these columns.",
+    "Dates are frequently misread (e.g., '25' as '35' or '75'). Date fields require strict validation.",
+    "OCR noise (trailing characters like '.', ',', '!', '}', etc.) is very common and should be cleaned from the final values.",
+    "Column shift errors are prevalent, especially in the patient responsibility fields (Coinsurance, Copay, Deductible, Non-Covered). This leads to values from one column being extracted into another. Cross-checking totals and calculations might help identify these shifts.",
+    "The schema requires separating procedure/revenue codes, modifiers, and explanation codes. A structural error occurred where values from the 'Explanation Code(s)' column were consistently mapped to the `modifiers` field instead of `explanation_codes`.",
+    "When a value is present in a specific patient responsibility column (e.g., Deductible), ensure it is mapped to the correct JSON field and not a neighboring one (e.g., non_covered).",
+    "For reversal lines (indicated by negative charges/discounts), ensure all related financial values have the correct sign. A negative charge should generally correspond to a negative provider discount.",
+    "Claim totals should be validated against the sum of their constituent service lines, especially when the source document contains apparent OCR errors or miscalculations.",
+    "Carefully distinguish between the 'Proc/Rev Code (Modifiers)' column and the 'Explanation Code(s)' column. Values from the 'Explanation Code(s)' column must be mapped to the `explanation_codes` field, not `modifiers`."
+  ],
+  "layout_patterns": {}
+}

@@ -1,0 +1,8 @@
+{
+  "lessons": [
+    "When encountering stacked financial values within a single service line (e.g., patient responsibility and contractual adjustments split across sub-rows), ensure that the correct value is assigned to the correct field. In this case, the model correctly combined the adjustment reason codes but incorrectly picked the first value (`$0.00`) for `contractual_adjustments` instead of the second, correct value (`$163.00`).",
+    "When a single service has multiple adjustment lines stacked vertically, it's crucial to clarify the rule for aggregating financial values. The current extraction sums the 'Contractual Adjustments' from both lines for the service, which is a reasonable interpretation but not a direct one-to-one mapping from the first visible line.",
+    "Do not auto-correct codes or acronyms (e.g., '00-45' to 'CO-45', 'MPS' to 'MIPS') even if they appear to be typos. The extraction must match the source document exactly."
+  ],
+  "layout_patterns": {}
+}

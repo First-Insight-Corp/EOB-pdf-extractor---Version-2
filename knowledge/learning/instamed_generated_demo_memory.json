@@ -1,0 +1,9 @@
+{
+  "lessons": [
+    "Ensure consistent logic is applied to all claims when handling stacked cells. The logic for summing stacked 'contractual_adjustments' was applied correctly to the third claim but not to the second claim.",
+    "Extract data exactly as it appears in the source text, even if it contains apparent typos (e.g., '00-45' instead of 'CO-45', 'MPS' instead of 'MIPS'). Post-processing steps can be used for normalization or correction if needed.",
+    "Ensure that stacked monetary values for a single service line are consistently summed, as was done for the third claim but not for the second.",
+    "The text in definition tables (like ADJUSTMENT REASON CODES) should be extracted verbatim, even if it appears to contradict codes used in the service lines."
+  ],
+  "layout_patterns": {}
+}

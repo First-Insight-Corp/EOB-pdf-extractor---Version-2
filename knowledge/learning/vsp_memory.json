@@ -1,0 +1,20 @@
+{
+  "lessons": [
+    "Verify that procedure codes in the JSON match the source text exactly, as OCR errors like '192015' vs. '92015' are common and must be reported as discrepancies against the text.",
+    "When a value is extracted from a table, ensure it is mapped to the correct field based on its column header (e.g., Coinsurance vs. Copay).",
+    "Ensure that values like `units` are extracted even if they appear unusual (e.g., '-1' or 'w 1').",
+    "When parsing header lines, ensure that suffixes or professional titles (like 'OD') are only included if they are explicitly present in the source text.",
+    "Carefully handle cases where similar data for the same patient appears in consecutive claims to avoid data carryover, especially for identifiers like `insured_id`.",
+    "Ensure all parts of a name field are captured, even if they include numbers or seem like noise, unless there is a specific rule to omit them.",
+    "When a service line has a blank unit count (e.g., for an exam or refraction), it should be defaulted to '1' for consistency, rather than 'null'.",
+    "When a non-numeric symbol like an asterisk '*' appears in a monetary field, it should be captured as-is or set to null, rather than being interpreted as 0.0, to preserve the original data's intent.",
+    "The suffix 'OD' should not be assumed or appended to a doctor's name unless explicitly present in the source document.",
+    "When a document ends with a 'Total Provider' summary line instead of an explicitly labeled 'Total VSP Check', the final value in the 'VSP Pays Doctor' / 'Provider Payment' column should be mapped to 'total_vsp_check'.",
+    "Carefully analyze line breaks and positioning for identifiers like insured_id. A number on a new line might be a continuation of the ID for the next claim block, not the current one.",
+    "Single-digit message codes (e.g., '1') are present in the source and must be carefully extracted. They are sometimes missed when they appear alone in the 'Message Code(s)' column.",
+    "When a field like 'Unit(s)' is visually blank in the source document, the corresponding JSON field should be extracted as null. Do not infer or assume a value (e.g., '1'), even if it seems logical for the service type.",
+    "When a claim spans multiple pages, it's crucial to ensure all service lines from the continuation page are captured before the 'Totals' row. In this case, the claim for JACKSON, ENRIQUE continued onto page 7, but the first service line on that page was missed.",
+    "When a single digit or short character sequence appears on a line by itself between two claim blocks, carefully verify which claim it belongs to. In this case, the '5' below the first 'SHERMAN, WILLIAM' claim belonged to the insured_id of the second 'SHERMAN, WILLIAM' claim but was incorrectly appended to the first one as well."
+  ],
+  "layout_patterns": {}
+}

@@ -1,0 +1,20 @@
+{
+  "lessons": [
+    "When a multi-page document contains conflicting reference numbers in its headers, the extraction should either capture all variations or a note should be made about the inconsistency.",
+    "For service dates presented as a range (e.g., 'MM/DD-MM/DD/YYYY'), the full range should be extracted to avoid data truncation.",
+    "When a claim-level provider name is not explicitly stated, the document-level payee name should be used instead of the Provider NPI.",
+    "Do not use information from previous documents or external context to populate fields like 'payer'. The field should only contain information explicitly present in the current source document.",
+    "Carefully distinguish between different numerical identifiers on the page. In this case, '1076' was a document reference number, while 'J076' was part of the page numbering information.",
+    "Ensure that columns like 'Contractual Obligation' on Aetna EOBs are correctly mapped to 'provider_discount', even when the value is zero.",
+    "The 'Policy #' field on Heartland National documents should be mapped to 'subscriber_id'.",
+    "Claim-level remark codes, such as those found in the header row on AVESIS documents, must be captured. If no claim-level field exists, they should be associated with the first service line.",
+    "Be cautious with concatenating multiple identifiers into a single `document_reference` field; extract the primary reference number.",
+    "The provided SCHEMA RULES did not match the structure of any of the three source document types (Aetna, Heartland, AVESIS). Applying a schema for one payer format to another's document can lead to mapping errors, such as incorrectly assigning a negative sign to the 'Prov Adj' value from the AVESIS document or misinterpreting column names.",
+    "The AVESIS document format contains multiple identifiers in the 'Plan' column. The extraction logic should be enhanced to capture all of these values, correctly associating them with fields like 'group_id' and 'patient_acct_number'.",
+    "Service-line level remark codes, which can appear in various columns on the AVESIS document (e.g., the 'Insured ID' column), must be consistently captured in the `explanation_codes` field.",
+    "When multiple documents are present in a batch, ensure that the structure for common objects like 'virtual_card' is consistent across all document metadata entries. In this case, 'payment_id' should be consistently nested within the 'virtual_card' object.",
+    "When a source document column header is semantically equivalent but not identical to a schema field (e.g., 'Excluded Charges' vs. 'provider_discount'), the data should be mapped to the appropriate schema field to prevent critical financial data loss.",
+    "If a document format lacks a 'Units' column, each service line should be inferred as 1 unit unless there is explicit information to the contrary."
+  ],
+  "layout_patterns": {}
+}
