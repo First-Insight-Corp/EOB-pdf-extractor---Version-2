@@ -9,8 +9,9 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from config import config
+from logs_config import get_extraction_logger
 
-logger = logging.getLogger(__name__)
+logger = get_extraction_logger()
 
 
 class CriticAgent:
@@ -93,20 +94,6 @@ Your task: Write clear, numbered instructions for the Extraction Agent so it can
                     logger.warning("Critic (Claude) missing usage metadata")
             else:
                 instruction_text = "Address these issues:\n" + "\n".join(f"- {i}" for i in issues)
-
-            if pdf_filename and config.LOG_CRITIC:
-                try:
-                    log_dir = os.path.join(os.getcwd(), "logs", "critic")
-                    os.makedirs(log_dir, exist_ok=True)
-                    log_path = os.path.join(log_dir, f"{pdf_filename}.log")
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"\n--- Critic Timestamp: {datetime.now().isoformat()} ---\n")
-                        f.write(f"Based on Issues:\n")
-                        for i, issue in enumerate(issues, 1):
-                            f.write(f"{i}. {issue}\n")
-                        f.write(f"\nGenerates Improvement Instructions:\n{instruction_text}\n\n")
-                except Exception as eval_log_e:
-                    logger.warning(f"Failed to write critic log: {eval_log_e}")
 
             # DB Logging
             if processed_file_id:

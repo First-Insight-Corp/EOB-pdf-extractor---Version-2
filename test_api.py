@@ -12,7 +12,7 @@ from typing import Literal
 class PDFClaimsAPIClient:
     """Client for interacting with PDF Claims Extraction API"""
     
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = "http://localhost:8040"):
         self.base_url = base_url
     
     def health_check(self) -> dict:
@@ -166,7 +166,7 @@ def main():
     print("\nMethod 2: Using cURL")
     print("-" * 40)
     print("""
-    curl -X POST "http://localhost:8000/api/v1/process-pdf" \\
+        curl -X POST "http://localhost:8040/api/v1/process-pdf" \\
       -F "file=@/path/to/your/claims.pdf" \\
       -F "document_type=vsp"
     """)
@@ -208,8 +208,8 @@ def main():
     print("\n" + "="*70)
     print("✅ TEST COMPLETE")
     print("="*70)
-    print("\nAPI Documentation: http://localhost:8000/docs")
-    print("Health Check: http://localhost:8000/health")
+    print("\nAPI Documentation: http://localhost:8040/docs")
+    print("Health Check: http://localhost:8040/health")
     print("\n")
 
 

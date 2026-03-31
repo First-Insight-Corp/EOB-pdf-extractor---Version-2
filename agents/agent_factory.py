@@ -6,8 +6,9 @@ import logging
 from typing import Optional
 
 from config import config
+from logs_config import get_extraction_logger
 
-logger = logging.getLogger(__name__)
+logger = get_extraction_logger()
 
 
 def get_extraction_agent():

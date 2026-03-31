@@ -11,8 +11,9 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from config import config
+from logs_config import get_extraction_logger
 
-logger = logging.getLogger(__name__)
+logger = get_extraction_logger()
 
 
 class SetEncoder(json.JSONEncoder):
@@ -143,23 +144,6 @@ class AuditorAgent:
 
             final_issues = clean_list(audit_result.get("issues", []))
             final_lessons = clean_list(audit_result.get("lessons", []))
-
-            if pdf_filename and config.LOG_AUDITOR:
-                try:
-                    log_dir = os.path.join(os.getcwd(), "logs", "auditor")
-                    os.makedirs(log_dir, exist_ok=True)
-                    log_path = os.path.join(log_dir, f"{pdf_filename}.log")
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"\n--- Audit Timestamp: {datetime.now().isoformat()} ---\n")
-                        f.write(f"Issues Found:\n")
-                        for i, issue in enumerate(final_issues, 1):
-                            f.write(f"{i}. {issue}\n")
-                        f.write(f"\nLessons Learned:\n")
-                        for i, lesson in enumerate(final_lessons, 1):
-                            f.write(f"{i}. {lesson}\n")
-                        f.write("\n")
-                except Exception as eval_log_e:
-                    logger.warning(f"Failed to write auditor log: {eval_log_e}")
 
             # DB Logging
             if processed_file_id:

@@ -7,8 +7,9 @@ Output structure is dynamic and driven by format modules (BatchModel, schema).
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 
-import logging
-logger = logging.getLogger(__name__)
+# Use centralized logging
+from logs_config import get_extraction_logger
+logger = get_extraction_logger()
 
 
 class BaseExtractionAgent(ABC):

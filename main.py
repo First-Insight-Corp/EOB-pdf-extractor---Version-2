@@ -1,14 +1,22 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import json
 import shutil
 import time
+import asyncio
 from datetime import datetime
 from typing import Literal, Optional, Tuple, Any
 import logging
 import uuid
+from pydantic import BaseModel
+
+# Import logging configuration FIRST, before other modules
+from logs_config import setup_logging, get_logger, log_api_request, log_pdf_processing, log_extraction_step, log_chunk_processing, log_db_operation
+
+# Setup centralized logging
+logger = setup_logging(app_name="Main_API")
 
 from pdf_processor import PDFProcessor
 from config import config
@@ -18,19 +26,17 @@ from agents.extraction_graph import build_extraction_graph, run_extraction_workf
 from agents.token_logger import TokenLogger
 from agents.format_generator_agent import FormatGeneratorAgent
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 # Initialize FastAPI app
 app = FastAPI(
     title="PDF Claims Extraction API",
-    description="Extract structured insurance claims data from VSP and EyeMed PDFs using AI",
-    version="1.0.0"
+    description="Extract structured insurance claims data using Background Tasks",
+    version="1.1.0"
 )
+
+
+class KnowledgeUpdateRequest(BaseModel):
+    lessons: Optional[list] = None
+    layout_patterns: Optional[dict] = None
 
 # Add CORS middleware
 app.add_middleware(
@@ -79,161 +85,120 @@ async def health_check():
     }
 
 
-@app.post("/api/v1/process-pdf")
-async def process_pdf(
-    file: UploadFile = File(..., description="PDF file to process"),
-    document_type: str = Form(..., description="Document format (e.g. vsp, eyemed). Any format in formats/ folder is supported."),
-):
-    """
-    Process PDF and extract structured claims data.
-    
-    Args:
-        file: PDF file upload
-        document_type: Type of document (vsp or eyemed)
-    
-    Returns:
-        Structured JSON response with extracted claims
-    """
-    start_time = time.time()
+@app.get("/api/v1/formats")
+async def list_formats(refresh: bool = False):
+    """Return all currently supported document formats."""
     try:
-        get_extraction_agent()
-    except ValueError as e:
+        if refresh:
+            config.SUPPORTED_FORMATS = config.get_supported_formats()
+
+        return {
+            "total_formats": len(config.SUPPORTED_FORMATS),
+            "formats": config.SUPPORTED_FORMATS,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error listing formats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-    # Validate file type
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are supported"
-        )
-    
-    # Validate document type (dynamic: any format module in formats/ is supported)
-    doc_type_lower = document_type.lower().strip()
-    if doc_type_lower not in config.SUPPORTED_FORMATS:
-        # Try refreshing formats (picks up manually added files and syncs to DB)
-        logger.info(f"Format '{doc_type_lower}' not in cache, refreshing from DB/Disk...")
-        config.SUPPORTED_FORMATS = config.get_supported_formats()
-        
-        if doc_type_lower not in config.SUPPORTED_FORMATS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported document type. Supported formats: {config.SUPPORTED_FORMATS}"
-            )
-    
-    # Generate unique identification for this request
-    request_id = str(uuid.uuid4())
-    logger.info(f"Generated new request_id: {request_id}")
 
-    # Generate unique filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    original_filename = file.filename.replace(" ", "_")
-    saved_filename = f"{timestamp}_{original_filename}"
-    file_path = os.path.join(config.UPLOAD_DIR, saved_filename)
-    
+@app.get("/api/v1/document-formats")
+async def list_document_formats(include_code: bool = Query(False)):
+    """List template records from document_formats table."""
     try:
-        # Save uploaded file
-        logger.info(f"Saving uploaded file: {saved_filename}")
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        file_size = os.path.getsize(file_path)
-        logger.info(f"Processing {doc_type_lower.upper()} PDF: {saved_filename} (size: {file_size} bytes)")
-        
-        # Step 1: Load format file for the document type (dynamic; no hardcoded structures)
-        try:
-            format_path = config.get_format_file(doc_type_lower)
-            format_components = FormatLoader.load_format(format_path)
-            schema_description = FormatLoader.get_schema_description(format_components)
-            logger.info(f"Loaded format file: {format_path}")
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error loading format file: {str(e)}"
-            )
-        
-        # Step 2: Initialize PDF Processor
-        pdf_processor = PDFProcessor(file_path)
-        
-        # Step 3: Get total pages and Pre-validate
-        total_pages = pdf_processor.get_total_pages()
-        logger.info(f"PDF has {total_pages} pages")
-        
-        if total_pages == 0:
-            raise HTTPException(status_code=400, detail="PDF appears to be empty")
-        
-        if not pdf_processor.pre_validate():
-            logger.warning("Pre-validation: PDF has no extractable text. Continuing with OCR.")
+        from db import db, DocumentFormat
 
-        # Step 4: Extraction Agent (Gemini or Claude from .env EXTRACTION_AGENT)
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+
+        session = db.get_session()
+        rows = session.query(DocumentFormat).order_by(DocumentFormat.updated_at.desc()).all()
+
+        formats = []
+        for row in rows:
+            item = {
+                "id": row.id,
+                "short_name": row.short_name,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            if include_code:
+                item["python_code"] = row.python_code
+            formats.append(item)
+
+        session.close()
+        return {
+            "total_formats": len(formats),
+            "formats": formats,
+        }
+    except Exception as e:
+        logger.error(f"Error listing document formats: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def run_background_extraction(
+    processed_file_id: int,
+    file_path: str,
+    doc_type_lower: str,
+    original_filename: str,
+    saved_filename: str,
+    request_id: str,
+    file_size: int,
+):
+    """Background extraction worker that updates DB status and final response."""
+    start_time = time.time()
+    pdf_processor = PDFProcessor(file_path)
+
+    try:
+        format_path = config.get_format_file(doc_type_lower)
+        format_components = FormatLoader.load_format(format_path)
+        schema_description = FormatLoader.get_schema_description(format_components)
+        log_extraction_step("Format Loading", "Success", request_id, format_path)
+
+        total_pages = pdf_processor.get_total_pages()
+        log_pdf_processing(saved_filename, doc_type_lower, total_pages, request_id)
+        if total_pages == 0:
+            raise ValueError("PDF appears to be empty")
+
+        if not pdf_processor.pre_validate():
+            logger.warning(f"[{request_id}] Pre-validation: PDF has no extractable text. Continuing with OCR.")
+
         extraction_agent = get_extraction_agent()
         extraction_agent.load_memory(doc_type_lower)
         extraction_agent.reset_memory(keep_learning=True)
         auditor = get_auditor_agent()
         critic = get_critic_agent()
-        
-        # Step 5: Early DB entry for linking logs
-        current_processed_file_id = None
-        try:
-            from db import db, ProcessedFile, DocumentFormat
-            if db:
-                session = db.get_session()
-                fmt = session.query(DocumentFormat).filter_by(short_name=doc_type_lower).first()
-                template_id = fmt.id if fmt else None
-                
-                # Initial placeholder record
-                processed_entry = ProcessedFile(
-                    template_id=template_id,
-                    file_path=None,
-                    file_type="pdf",
-                    request_logs={"status": "processing"}
-                )
-                session.add(processed_entry)
-                session.commit()
-                current_processed_file_id = processed_entry.processed_file_id
-                session.close()
-                logger.info(f"Created early DB log entry with ID: {current_processed_file_id}")
-        except Exception as e:
-            logger.error(f"Failed to create early DB log entry: {e}")
 
-        # Step 6: Setup incremental response saving
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         response_filename = f"{timestamp}_{doc_type_lower}_{original_filename.replace('.pdf', '')}_response.json"
         response_path = os.path.join(config.RESPONSE_DIR, response_filename)
-        
+
         extracted_claims = []
         aggregated_metadata = {}
         previous_context = ""
-        
+
         total_input_tokens = 0
         total_output_tokens = 0
         llm_usage_breakdown = {}
         total_iterations = 0
         total_role_usage = {"extractor": {}, "auditor": {}, "critic": {}}
-        
-        # CHUNKED PROCESSING STRATEGY FOR LARGE PDFS
-        # Threshold for splitting into independent chunks to maintain 99% accuracy
+
         CHUNK_SIZE = config.MAX_PAGES_PER_CHUNK
-        
+
         if total_pages > CHUNK_SIZE:
-            logger.info(f"Large document detected ({total_pages} pages). Using Chunked Extraction strategy (size: {CHUNK_SIZE}).")
-            
             chunks = []
             for start in range(1, total_pages + 1, CHUNK_SIZE):
                 end = min(start + CHUNK_SIZE - 1, total_pages)
                 chunks.append((start, end))
-            
-            total_batches_counter = 0
+
+            total_batches = 0
             for chunk_idx, (start, end) in enumerate(chunks):
                 chunk_filename = f"chunk_{chunk_idx+1}_{saved_filename}"
                 chunk_path = os.path.join(config.UPLOAD_DIR, chunk_filename)
-                
-                logger.info(f">>> PROCESSING CHUNK {chunk_idx+1}/{len(chunks)}: Pages {start}-{end}")
+                log_chunk_processing(chunk_idx + 1, len(chunks), start, end, request_id)
                 pdf_processor.split_pdf(start, end, chunk_path)
-                
-                # We only carry over the 'previous_context' for claim continuity
-                extraction_agent.reset_memory(keep_learning=True) # Clear history but KEEP lessons
-                
+                extraction_agent.reset_memory(keep_learning=True)
+
                 chunk_processor = PDFProcessor(chunk_path)
                 try:
                     chunk_claims, chunk_metadata, chunk_ctx, chunk_batches, chunk_in, chunk_out, chunk_llm, chunk_loops, chunk_role_usage = run_extraction_pipeline(
@@ -244,12 +209,13 @@ async def process_pdf(
                         format_components=format_components,
                         doc_type_lower=doc_type_lower,
                         schema_description=schema_description,
-                        previous_context=previous_context, # carry over from end of last chunk
+                        previous_context=previous_context,
                         pdf_filename=saved_filename,
                         start_page_offset=start - 1,
-                        processed_file_id=current_processed_file_id,
-                        request_id=request_id
+                        processed_file_id=processed_file_id,
+                        request_id=request_id,
                     )
+
                     total_input_tokens += chunk_in
                     total_output_tokens += chunk_out
                     for model, usage in chunk_llm.items():
@@ -257,7 +223,7 @@ async def process_pdf(
                             llm_usage_breakdown[model] = {"input": 0, "output": 0}
                         llm_usage_breakdown[model]["input"] += usage["input"]
                         llm_usage_breakdown[model]["output"] += usage["output"]
-                    
+
                     total_iterations += chunk_loops
                     for role, usage in chunk_role_usage.items():
                         for model, counts in usage.items():
@@ -265,9 +231,8 @@ async def process_pdf(
                                 total_role_usage[role][model] = {"input": 0, "output": 0}
                             total_role_usage[role][model]["input"] += counts["input"]
                             total_role_usage[role][model]["output"] += counts["output"]
-                    
+
                     extracted_claims.extend(chunk_claims)
-                    # Merge metadata
                     if chunk_metadata:
                         for k, v in chunk_metadata.items():
                             if isinstance(v, list):
@@ -276,29 +241,24 @@ async def process_pdf(
                                 aggregated_metadata[k].extend(v)
                             elif v:
                                 aggregated_metadata[k] = v
-                    
-                    previous_context = chunk_ctx # update for NEXT chunk
-                    total_batches_counter += chunk_batches
-                    
-                    # Progressive persistence
-                    try:
-                        map_data_fn = format_components.get("map_extracted_data")
-                        full_data = map_data_fn(extracted_claims, aggregated_metadata) if map_data_fn else {"claims": extracted_claims, **aggregated_metadata}
-                        current_response = FormatLoader.create_response(format_components=format_components, full_data=full_data, document_type=doc_type_lower.upper())
-                        with open(response_path, "w") as f:
-                            json.dump(current_response, f, indent=2)
-                        logger.info(f"Chunk {chunk_idx+1} progress saved.")
-                    except Exception as e:
-                        logger.error(f"Failed to save progress for chunk {chunk_idx+1}: {e}")
-                        
+
+                    previous_context = chunk_ctx
+                    total_batches += chunk_batches
+
+                    map_data_fn = format_components.get("map_extracted_data")
+                    full_data = map_data_fn(extracted_claims, aggregated_metadata) if map_data_fn else {"claims": extracted_claims, **aggregated_metadata}
+                    current_response = FormatLoader.create_response(
+                        format_components=format_components,
+                        full_data=full_data,
+                        document_type=doc_type_lower.upper(),
+                    )
+                    with open(response_path, "w") as f:
+                        json.dump(current_response, f, indent=2)
                 finally:
                     chunk_processor.close()
                     if os.path.exists(chunk_path):
                         os.remove(chunk_path)
-            
-            total_batches = total_batches_counter
         else:
-            # Single document processing
             extracted_claims, aggregated_metadata, _, total_batches, single_in, single_out, single_llm, single_loops, single_role_usage = run_extraction_pipeline(
                 pdf_processor=pdf_processor,
                 extraction_agent=extraction_agent,
@@ -309,142 +269,194 @@ async def process_pdf(
                 schema_description=schema_description,
                 previous_context="",
                 pdf_filename=saved_filename,
-                response_path=response_path,
-                processed_file_id=current_processed_file_id,
-                request_id=request_id
+                processed_file_id=processed_file_id,
+                request_id=request_id,
             )
             total_input_tokens += single_in
             total_output_tokens += single_out
-            for model, usage in single_llm.items():
-                if model not in llm_usage_breakdown:
-                    llm_usage_breakdown[model] = {"input": 0, "output": 0}
-                llm_usage_breakdown[model]["input"] += usage["input"]
-                llm_usage_breakdown[model]["output"] += usage["output"]
+            llm_usage_breakdown = single_llm
             total_iterations = single_loops
             total_role_usage = single_role_usage
-        
-        # Calculate time taken
-        time_taken = time.time() - start_time
-        # Finalize processing
-        extraction_agent.save_memory(doc_type_lower)
-        TokenLogger.log_total(saved_filename, total_input_tokens, total_output_tokens, total_pages=total_pages, llm_usage_breakdown=llm_usage_breakdown)
-        
+
         if not extracted_claims:
-            logger.warning("No claims were extracted from the document")
-            raise HTTPException(
-                status_code=422,
-                detail="No claims could be extracted from the PDF. Please verify the document format."
-            )
-        
-        # Final response (format-driven; new formats work by adding a module under formats/)
+            raise ValueError("No claims could be extracted from the PDF. Please verify the document format.")
+
         map_data_fn = format_components.get("map_extracted_data")
         full_data = map_data_fn(extracted_claims, aggregated_metadata) if map_data_fn else {"claims": extracted_claims, **aggregated_metadata}
         structured_response = FormatLoader.create_response(
             format_components=format_components,
             full_data=full_data,
-            document_type=doc_type_lower.upper()
+            document_type=doc_type_lower.upper(),
         )
-        
-        memory_summary = getattr(extraction_agent, "get_memory_summary", lambda: {"conversation_turns": 0})()
-        
-        # Step 9: Explicitly close PDF to release file handle
-        pdf_processor.close()
-        
-        # Step 10: Cleanup uploaded file safely
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                logger.info(f"Cleaned up uploaded file: {saved_filename}")
-        except Exception as e:
-            logger.warning(f"Failed to cleanup {saved_filename}: {e}")
-        
-        # Step 11: Update MySQL processed_files with final metrics
-        try:
-            from db import db, ProcessedFile, DocumentFormat
-            if db and current_processed_file_id:
-                session = db.get_session()
-                processed_entry = session.query(ProcessedFile).get(current_processed_file_id)
+
+        with open(response_path, "w") as f:
+            json.dump(structured_response, f, indent=2)
+
+        extraction_agent.save_memory(doc_type_lower)
+        TokenLogger.log_total(
+            saved_filename,
+            total_input_tokens,
+            total_output_tokens,
+            total_pages=total_pages,
+            llm_usage_breakdown=llm_usage_breakdown,
+        )
+
+        from db import db, ProcessedFile
+
+        if db:
+            session = db.get_session()
+            try:
+                processed_entry = session.query(ProcessedFile).get(processed_file_id)
                 if processed_entry:
-                    # Combine LLMs used string
-                    llms_list = list(llm_usage_breakdown.keys())
-                    llm_used_str = " | ".join(llms_list)
-                    
-                    # Accuracy is placeholder for now or can be derived if Auditor has a score
-                    accuracy = 100.0 # Placeholder
-                    
-                    request_logs = {
+                    llm_used_str = " | ".join(list(llm_usage_breakdown.keys()))
+                    processed_entry.request_logs = {
+                        "status": "success",
+                        "time_taken_to_process": round(time.time() - start_time, 2),
+                        "no_of_pages": total_pages,
                         "no_of_iterations": total_iterations,
-                        "accuracy_percentage": accuracy,
                         "llm_used": llm_used_str,
                         "no_of_tokens": {
                             "total": {"input": total_input_tokens, "output": total_output_tokens},
-                            "by_role": total_role_usage
+                            "by_role": total_role_usage,
                         },
-                        "time_taken_to_process": round(time_taken, 2),
-                        "no_of_pages": total_pages,
                         "file_size": file_size,
-                        "status": "success"
+                        "request_id": request_id,
+                        "original_filename": original_filename,
+                        "saved_filename": saved_filename,
+                        "response_file": os.path.basename(response_path),
+                        "batches_processed": total_batches,
                     }
-                    
-                    processed_entry.request_logs = request_logs
                     processed_entry.final_response = structured_response
+                    processed_entry.final_response_raw_text = json.dumps(structured_response, indent=2)
                     session.commit()
+            finally:
                 session.close()
-                logger.info(f"Updated processing metrics and final response in MySQL for ID: {current_processed_file_id}")
-        except Exception as e:
-            logger.error(f"Failed to update execution log in MySQL: {e}")
-        
-        # Return response
-        return JSONResponse(
-            content={
-                "status": "success",
-                "message": f"Successfully processed {total_pages} pages and extracted {len(extracted_claims)} claims",
-                "document_info": {
-                    "filename": original_filename,
-                    "type": doc_type_lower.upper(),
-                    "total_pages": total_pages,
-                    "batches_processed": total_batches
-                },
-                "data": structured_response,
-                "response_file": response_filename,
-                "processing_metadata": {
-                    "conversation_turns": memory_summary['conversation_turns'],
-                    "claims_extracted": len(extracted_claims),
-                    "timestamp": datetime.now().isoformat()
-                }
-            },
-            status_code=200
-        )
-        
-    except HTTPException:
-        # Ensure processor is closed even on HTTP exceptions if it exists
-        if 'pdf_processor' in locals():
-            pdf_processor.close()
-        raise
     except Exception as e:
-        logger.error(f"Error processing PDF: {str(e)}", exc_info=True)
-        
-        # Safe cleanup on error
-        if 'pdf_processor' in locals():
+        logger.error(f"Background task failed for {request_id}: {e}", exc_info=True)
+        from db import db, ProcessedFile
+
+        if db:
+            session = db.get_session()
             try:
-                pdf_processor.close()
-            except:
-                pass
-                
-        if 'file_path' in locals() and os.path.exists(file_path):
+                processed_entry = session.query(ProcessedFile).get(processed_file_id)
+                if processed_entry:
+                    processed_entry.request_logs = {
+                        "status": "failed",
+                        "request_id": request_id,
+                        "original_filename": original_filename,
+                        "saved_filename": saved_filename,
+                        "error": str(e),
+                    }
+                    session.commit()
+            finally:
+                session.close()
+    finally:
+        pdf_processor.close()
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+
+@app.post("/api/v1/process-pdf")
+async def process_pdf(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    document_type: str = Form(...),
+):
+    try:
+        get_extraction_agent()
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not file.filename or not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    request_id = str(uuid.uuid4())
+    doc_type_lower = document_type.lower().strip()
+
+    if doc_type_lower not in config.SUPPORTED_FORMATS:
+        logger.info(f"Format '{doc_type_lower}' not in cache, refreshing from DB/Disk...")
+        config.SUPPORTED_FORMATS = config.get_supported_formats()
+        if doc_type_lower not in config.SUPPORTED_FORMATS:
+            raise HTTPException(status_code=400, detail=f"Unsupported document type. Supported formats: {config.SUPPORTED_FORMATS}")
+
+    log_api_request("/api/v1/process-pdf", "POST", request_id)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    original_filename = file.filename.replace(" ", "_")
+    saved_filename = f"{timestamp}_{original_filename}"
+    file_path = os.path.join(config.UPLOAD_DIR, saved_filename)
+
+    current_processed_file_id = None
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        file_size = os.path.getsize(file_path)
+
+        from db import db, ProcessedFile, DocumentFormat
+
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+
+        session = db.get_session()
+        try:
+            fmt = session.query(DocumentFormat).filter_by(short_name=doc_type_lower).first()
+            processed_entry = ProcessedFile(
+                template_id=fmt.id if fmt else None,
+                file_path=saved_filename,
+                file_type="pdf",
+                request_logs={
+                    "status": "processing",
+                    "request_id": request_id,
+                    "original_filename": original_filename,
+                    "saved_filename": saved_filename,
+                },
+            )
+            session.add(processed_entry)
+            session.commit()
+            current_processed_file_id = processed_entry.processed_file_id
+            log_db_operation("INSERT", "ProcessedFile", "Success", request_id)
+        finally:
+            session.close()
+
+        background_tasks.add_task(
+            run_background_extraction,
+            current_processed_file_id,
+            file_path,
+            doc_type_lower,
+            original_filename,
+            saved_filename,
+            request_id,
+            file_size,
+        )
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "accepted",
+                "processed_id": current_processed_file_id,
+                "message": "Processing started. Use the GET response endpoint to fetch results.",
+                "check_status_url": f"/api/v1/response/{current_processed_file_id}",
+            },
+        )
+    except HTTPException:
+        if os.path.exists(file_path):
             try:
                 os.remove(file_path)
-            except Exception as cleanup_err:
-                logger.warning(f"Cleanup failed after error: {cleanup_err}")
-        
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing PDF: {str(e)}"
-        )
+            except Exception:
+                pass
+        raise
+    except Exception as e:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"Error queuing PDF processing: {str(e)}")
 
 
 @app.get("/api/v1/responses")
-async def list_responses():
+async def list_responses(include_raw_text: bool = Query(False)):
     """List all saved response files from Database"""
     try:
         from db import db, ProcessedFile, DocumentFormat
@@ -462,14 +474,22 @@ async def list_responses():
             if not record.final_response and not record.request_logs:
                 continue
                 
-            response_list.append({
+            response_item = {
                 "processed_id": record.processed_file_id,
                 "document_type": (fmt_name or "unknown").upper(),
                 "timestamp": record.date_time.isoformat(),
                 "status": record.request_logs.get("status", "unknown") if isinstance(record.request_logs, dict) else "unknown",
                 "request_id": record.request_logs.get("request_id", "N/A") if isinstance(record.request_logs, dict) else "N/A",
-                "pages": record.request_logs.get("no_of_pages", 0) if isinstance(record.request_logs, dict) else 0
-            })
+                "pages": record.request_logs.get("no_of_pages", 0) if isinstance(record.request_logs, dict) else 0,
+                "response_file": record.request_logs.get("response_file") if isinstance(record.request_logs, dict) else None,
+            }
+
+            if include_raw_text:
+                response_item["response_raw_text"] = record.final_response_raw_text or (
+                    json.dumps(record.final_response, indent=2) if record.final_response else None
+                )
+
+            response_list.append(response_item)
         
         session.close()
         return {
@@ -481,25 +501,162 @@ async def list_responses():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/v1/knowledge")
+async def list_learning_knowledge():
+    """List learning knowledge records from Database"""
+    try:
+        from db import db, LearningKnowledge
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+
+        session = db.get_session()
+        records = session.query(LearningKnowledge).order_by(LearningKnowledge.updated_at.desc()).all()
+
+        knowledge_items = []
+        for record in records:
+            knowledge_payload = {
+                "id": record.id,
+                "format_name": record.format_name,
+                "lessons": record.lessons or [],
+                "layout_patterns": record.layout_patterns or {},
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+                "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+            }
+
+            knowledge_items.append(
+                {
+                    **knowledge_payload,
+                    "knowledge_raw_text": json.dumps(knowledge_payload, indent=2),
+                }
+            )
+
+        session.close()
+        return {
+            "total_knowledge_records": len(knowledge_items),
+            "knowledge": knowledge_items,
+        }
+    except Exception as e:
+        logger.error(f"Error listing learning knowledge from DB: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/v1/knowledge/{knowledge_id}")
+async def update_learning_knowledge(knowledge_id: int, payload: KnowledgeUpdateRequest):
+    """Update learning knowledge lessons and layout patterns for a template"""
+    try:
+        from db import db, LearningKnowledge
+        from datetime import datetime
+        lessons = payload.lessons
+        layout_patterns = payload.layout_patterns
+        
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+        
+        if lessons is None and layout_patterns is None:
+            raise HTTPException(status_code=400, detail="At least one field (lessons or layout_patterns) must be provided")
+        
+        session = db.get_session()
+        
+        # Find the knowledge record
+        record = session.query(LearningKnowledge).filter_by(id=knowledge_id).first()
+        if not record:
+            session.close()
+            raise HTTPException(status_code=404, detail=f"Knowledge record with ID {knowledge_id} not found")
+        
+        # Update fields
+        if lessons is not None:
+            record.lessons = lessons
+        if layout_patterns is not None:
+            record.layout_patterns = layout_patterns
+        
+        record.updated_at = datetime.utcnow()
+        session.commit()
+        
+        log_db_operation("UPDATE", "LearningKnowledge", "Success", f"ID {knowledge_id}")
+        logger.info(f"Updated knowledge record ID {knowledge_id} for {record.format_name}")
+        
+        # Prepare response
+        updated_payload = {
+            "id": record.id,
+            "format_name": record.format_name,
+            "lessons": record.lessons or [],
+            "layout_patterns": record.layout_patterns or {},
+            "created_at": record.created_at.isoformat() if record.created_at else None,
+            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+        }
+        
+        session.close()
+        
+        return {
+            "status": "success",
+            "message": f"Knowledge record {knowledge_id} updated successfully",
+            "knowledge": updated_payload,
+            "knowledge_raw_text": json.dumps(updated_payload, indent=2)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating knowledge record {knowledge_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/response/{processed_id}")
-async def get_response(processed_id: int):
-    """Get a specific response from Database by Processed ID"""
+async def get_response(
+    processed_id: int,
+    wait_for_completion: bool = Query(True),
+    timeout_seconds: Optional[int] = Query(None, ge=1, le=1800),
+    poll_interval_seconds: float = Query(2.0, ge=0.5, le=10.0),
+):
+    """Get final response by Processed ID; optionally wait until extraction completes."""
     try:
         from db import db, ProcessedFile
         if not db:
             raise HTTPException(status_code=500, detail="Database not available")
-            
-        session = db.get_session()
-        record = session.query(ProcessedFile).get(processed_id)
-        session.close()
-        
-        if not record:
-            raise HTTPException(status_code=404, detail="Response not found in database")
-            
-        if not record.final_response:
-            raise HTTPException(status_code=404, detail="Extraction results not found for this record")
-        
-        return JSONResponse(content=record.final_response)
+
+        start_time = time.time()
+
+        while True:
+            session = db.get_session()
+            try:
+                record = session.query(ProcessedFile).get(processed_id)
+            finally:
+                session.close()
+
+            if not record:
+                raise HTTPException(status_code=404, detail="Job not found")
+
+            status = record.request_logs.get("status") if isinstance(record.request_logs, dict) else "unknown"
+
+            if status == "failed":
+                return {
+                    "status": "failed",
+                    "processed_id": processed_id,
+                    "error": record.request_logs.get("error") if isinstance(record.request_logs, dict) else "Unknown error",
+                }
+
+            # Return as soon as final output exists, even if status propagation lags.
+            if record.final_response:
+                raw_text = record.final_response_raw_text or json.dumps(record.final_response, indent=2)
+                try:
+                    return JSONResponse(content=json.loads(raw_text))
+                except Exception:
+                    return JSONResponse(content={"response_raw_text": raw_text})
+
+            if not wait_for_completion:
+                return {
+                    "status": "processing",
+                    "processed_id": processed_id,
+                    "message": "The AI is still extracting data. Please retry shortly.",
+                }
+
+            if timeout_seconds is not None and (time.time() - start_time) >= timeout_seconds:
+                return {
+                    "status": "processing",
+                    "processed_id": processed_id,
+                    "message": f"Still processing after {timeout_seconds} seconds. Retry this endpoint.",
+                }
+
+            await asyncio.sleep(poll_interval_seconds)
     except HTTPException:
         raise
     except Exception as e:
@@ -542,7 +699,7 @@ def run_extraction_pipeline(
     role_usage = {"extractor": {}, "auditor": {}, "critic": {}}
     
     batch_json_schema = format_components.get("batch_json_schema", "")
-    response_json_schema = format_components.get("batch_json_schema", "")
+    response_json_schema = format_components.get("response_json_schema", "")
     target_model = format_components.get("BatchModel")
     max_loops = getattr(config, "MAX_AUDITOR_CRITIC_LOOPS", 4)
     compiled_graph = build_extraction_graph(extraction_agent, auditor, critic)
@@ -659,13 +816,6 @@ def run_extraction_pipeline(
     return extracted_claims, aggregated_metadata, current_previous_context, total_batches, total_input, total_output, llm_usage, total_loops, role_usage
 
 
-if __name__ == "__main__":
-    import uvicorn
-    
-    logger.info(f"Starting server on {config.HOST}:{config.PORT}")
-    uvicorn.run(app, host=config.HOST, port=config.PORT)
-
-
 @app.post("/api/v1/generate-format")
 async def generate_format_endpoint(
     short_name: str = Form(...),
@@ -743,3 +893,10 @@ async def generate_format_endpoint(
                 os.remove(temp_path)
             except Exception as e:
                 logger.warning(f"Failed to remove temp file {temp_path}: {e}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    logger.info(f"Starting server on {config.HOST}:{config.PORT}")
+    uvicorn.run(app, host=config.HOST, port=config.PORT)

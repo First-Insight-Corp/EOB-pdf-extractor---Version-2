@@ -3,6 +3,19 @@ from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field, field_validator
 
 
+class AdjustmentDetail(BaseModel):
+    """Represents a single adjustment code paired with its amount."""
+    
+    value: Optional[float] = Field(
+        None,
+        description="The adjustment amount for this code (e.g., 2.00, 45.11)."
+    )
+    code: Optional[str] = Field(
+        None,
+        description="The adjustment code (e.g., 'CO-253', 'CO-45')."
+    )
+
+
 class ServiceLineItem(BaseModel):
     """Represents an individual service line within a Trizetto remittance claim."""
 
@@ -27,8 +40,8 @@ class ServiceLineItem(BaseModel):
         description="The CPT/HCPCS procedure or revenue code (e.g., '99203', '99213'). From 'Proc/Rev Code, Mods' column."
     )
     modifiers: Optional[str] = Field(
-        None,
-        description="Any procedure code modifiers from the 'Proc/Rev Code, Mods' column (e.g., 'GT', '25'). Separate multiple with a space."
+        None, 
+        description="Any 2 or 3 character modifiers like 'Rev', 'RT', or 'LT' associated with the procedure."
     )
     billed_amount: Optional[float] = Field(
         None,
@@ -54,13 +67,17 @@ class ServiceLineItem(BaseModel):
         None,
         description="Reduction applied due to late filing (e.g., 0.00)."
     )
-    other_adjustments: Optional[float] = Field(
-        None,
-        description="Other adjustment amount for this service line (e.g., 218.00, 148.00)."
-    )
-    adjustment_codes: Optional[str] = Field(
-        None,
-        description="All adjustment reason codes for this line (e.g., 'CO-109', 'CO-16'). Separate multiple with a space."
+    # other_adjustments: Optional[float] = Field(
+    #     None,
+    #     description="Other adjustment amount for this service line (e.g., 218.00, 148.00)."
+    # )
+    # adjustment_codes: Optional[str] = Field(
+    #     None,
+    #     description="All adjustment reason codes for this line (e.g., 'CO-109', 'CO-16'). Separate multiple with a space."
+    # )
+    adjustment_codes_with_values: Optional[List[AdjustmentDetail]] = Field(
+        default_factory=list,
+        description="Array of adjustment codes paired with their respective amounts (e.g., [{'value': 2.00, 'code': 'CO-253'}, {'value': 45.11, 'code': 'CO-45'}]). Use this field when you need to correlate individual amounts with their codes."
     )
     provider_paid: Optional[float] = Field(
         None,
@@ -71,7 +88,7 @@ class ServiceLineItem(BaseModel):
         description="All remark codes for this service line (e.g., 'N105 N193 N704', 'MA27 N704 N382'). Separate multiple with a space."
     )
 
-    @field_validator("modifiers", "adjustment_codes", "remark_codes", mode="before")
+    @field_validator("modifiers", "remark_codes", mode="before")
     @classmethod
     def convert_list_to_string(cls, v: Any) -> Any:
         if isinstance(v, list):
@@ -329,6 +346,22 @@ class TrizettoRemittancePage(BaseModel):
     )
 
 
+class ResponseModel(BaseModel):
+    """Top-level response model for Trizetto remittance extraction."""
+
+    trizetto_remittance_page: TrizettoRemittancePage = Field(
+        ...,
+        description="Top-level validated Trizetto remittance payload."
+    )
+
+
+class BatchModel(BaseModel):
+    """Model for validating each extraction batch."""
+
+    claims: List[ClaimModel] = Field(default_factory=list, description="Batch claims")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Batch metadata")
+
+
 SCHEMA_DESCRIPTION = """
 ### HIERARCHICAL ANALYSIS METHODOLOGY:
 **CRITICAL**: Study the document's visual hierarchy before any extraction:
@@ -422,6 +455,15 @@ def build_trizetto_payload(extracted_claims: list, merged_meta: dict) -> dict:
             "adjustment_code_glossary": merged_meta.get("adjustment_code_glossary") or [],
         }
     }
+
+
+def map_extracted_data(extracted_claims: List[dict], aggregated_metadata: dict) -> dict:
+    """Map raw batch output into the final Trizetto response hierarchy."""
+    merged_meta = dict(aggregated_metadata or {})
+    nested = merged_meta.get("trizetto_remittance_page")
+    if isinstance(nested, dict):
+        merged_meta = {**nested, **merged_meta}
+    return build_trizetto_payload(extracted_claims, merged_meta)
 
 
 def calculate_totals(claims_data: dict) -> dict:

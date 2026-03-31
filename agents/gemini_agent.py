@@ -7,6 +7,8 @@ from pydantic import ValidationError, BaseModel
 from config import config
 from format_loader import FormatLoader
 from agents.base_extraction_agent import BaseExtractionAgent
+from agents.memory import GlobalLearningMemory
+from logs_config import get_extraction_logger
 
 class SetEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -14,10 +16,7 @@ class SetEncoder(json.JSONEncoder):
             return list(obj)
         return super().default(obj)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-from agents.memory import GlobalLearningMemory
+logger = get_extraction_logger()
 
 class MultiModelAgent(BaseExtractionAgent):
     """

@@ -1,0 +1,13 @@
+{
+  "lessons": [
+    "When a single service line has multiple adjustment rows or stacked adjustment values, each distinct adjustment event (e.g., one row for PR, one for CO) should be treated as a separate service line item in the output array, with other service data duplicated. Merging them into a single service object misrepresents the financial data.",
+    "When a single service line in the source document (identified by a single service date range, procedure code, and unit count) has multiple rows of financial data (e.g., stacked Patient Responsibility or Contractual Adjustments), it must be extracted as a single service line object in the JSON. The corresponding adjustment reason codes should be concatenated with a space, and the financial values should be summed and placed in the correct fields.",
+    "When encountering potential typos in source data (like '00-45' instead of 'CO-45' or 'WLawyers' instead of 'W Lawyers'), it's safer to extract the literal text and add a note about the suspected error, rather than silently correcting it. This maintains data integrity and traceability.",
+    "Be cautious about auto-formatting that might alter source data, such as adding spaces before parentheses or within concatenated words in an address.",
+    "Ensure all extracted values are literal matches to the source text, including prefixes (e.g., 'Sort By') and punctuation. Interpretations or corrections should be confined to processing notes, not alter the data in the field itself.",
+    "When the text representation of a code in a definition table (e.g., '00-45' in ADJUSTMENT REASON CODES) appears to be an OCR error and contradicts both the visual document ('CO-45') and its usage within the claims, prioritize the visually-confirmed and consistently-used code for extraction to ensure data integrity.",
+    "Ensure that punctuation is extracted exactly as it appears in the source document. Avoid inferring or adding punctuation like colons, even if it seems to correct an inconsistency, as this technically deviates from the source text.",
+    "Address information, which may span multiple lines in the source document, must be fully captured within the single designated address field (e.g., `payer_address`). Do not split the address into multiple fields (e.g., `_address` and `_city_state_zip`) if the schema does not explicitly define them."
+  ],
+  "layout_patterns": {}
+}

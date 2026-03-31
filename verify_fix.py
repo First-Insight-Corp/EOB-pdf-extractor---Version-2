@@ -3,7 +3,7 @@ import json
 import os
 
 def test_extraction():
-    url = "http://localhost:8000/api/v1/process-pdf"
+    url = "http://localhost:8040/api/v1/process-pdf"
     pdf_path = r"d:\8 - EOB agentic solution\Backups\050225 - full working backup\pdfs\VSP - 4pages.pdf"
     
     if not os.path.exists(pdf_path):

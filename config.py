@@ -47,10 +47,6 @@ class APIConfig:
     AZURE_DI_KEY = os.getenv("AZURE_DI_KEY", "")
     AZURE_DI_ENDPOINT = os.getenv("AZURE_DI_ENDPOINT", "")
 
-    # Logging Preferences (Auditor and Critic logs)
-    LOG_AUDITOR = os.getenv("LOG_AUDITOR", "true").lower() == "true"
-    LOG_CRITIC = os.getenv("LOG_CRITIC", "true").lower() == "true"
-
     # Database Configuration
     DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
     DB_PORT = int(os.getenv("DB_PORT", 3306))
@@ -61,7 +57,7 @@ class APIConfig:
 
     # Server Configuration
     HOST = os.getenv("HOST", "0.0.0.0")
-    PORT = int(os.getenv("PORT", 8000))
+    PORT = int(os.getenv("PORT", 8040))
     
     # Processing Configuration
     MAX_PAGES_PER_BATCH = int(os.getenv("MAX_PAGES_PER_BATCH", 5))
@@ -74,6 +70,7 @@ class APIConfig:
     UPLOAD_DIR = "uploads"
     RESPONSE_DIR = "responses"
     FORMATS_DIR = "formats"
+    LOG_DIR = "logs"
     
     # Supported document types: discovered from DB and formats/*.py
     @classmethod
@@ -154,6 +151,7 @@ class APIConfig:
         os.makedirs(cls.UPLOAD_DIR, exist_ok=True)
         os.makedirs(cls.RESPONSE_DIR, exist_ok=True)
         os.makedirs(cls.FORMATS_DIR, exist_ok=True)
+        os.makedirs(cls.LOG_DIR, exist_ok=True)
         return True
     
     @classmethod
