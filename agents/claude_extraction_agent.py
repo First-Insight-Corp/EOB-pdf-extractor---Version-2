@@ -10,10 +10,10 @@ import time
 from typing import List, Dict, Any, Optional
 
 from agents.base_extraction_agent import BaseExtractionAgent
-
 from agents.memory import GlobalLearningMemory
+from logs_config import get_extraction_logger
 
-logger = logging.getLogger(__name__)
+logger = get_extraction_logger()
 
 
 class ClaudeExtractionAgent(BaseExtractionAgent):

@@ -5,8 +5,9 @@ import base64
 from typing import List, Dict, Tuple, Any, Optional
 import logging
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Use centralized logging
+from logs_config import get_pdf_processor_logger
+logger = get_pdf_processor_logger()
 
 class PDFProcessor:
     """

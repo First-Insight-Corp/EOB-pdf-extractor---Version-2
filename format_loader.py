@@ -8,8 +8,9 @@ import sys
 import json
 from typing import Any, Dict
 import logging
+from logs_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class FormatLoader:
@@ -22,45 +23,23 @@ class FormatLoader:
         """
         try:
             import os
-            import types
-            from db import db, DocumentFormat
-            
+
             module_name = os.path.splitext(os.path.basename(format_path))[0]
-            module = None
-            
-            # 1. Try to load from database first (Source of Truth)
-            if db:
-                try:
-                    session = db.get_session()
-                    fmt = session.query(DocumentFormat).filter_by(short_name=module_name).first()
-                    session.close()
-                    
-                    if fmt and fmt.python_code:
-                        logger.info(f"Loading format module '{module_name}' from database.")
-                        module = types.ModuleType(module_name)
-                        # Ensure we don't accidentally reuse an old module from sys.modules
-                        if module_name in sys.modules:
-                            del sys.modules[module_name]
-                        sys.modules[module_name] = module
-                        exec(fmt.python_code, module.__dict__)
-                except Exception as db_e:
-                    logger.warning(f"Failed to load format '{module_name}' from database: {db_e}. Falling back to disk if possible.")
-            
-            # 2. Fall back to local file if not in DB or DB load failed
-            if module is None:
-                if os.path.exists(format_path):
-                    logger.info(f"Loading format module '{module_name}' from local file: {format_path}")
-                    spec = importlib.util.spec_from_file_location(module_name, format_path)
-                    if spec is None or spec.loader is None:
-                        raise ImportError(f"Could not load spec from {format_path}")
-                    
-                    if module_name in sys.modules:
-                        del sys.modules[module_name]
-                    module = importlib.util.module_from_spec(spec)
-                    sys.modules[module_name] = module
-                    spec.loader.exec_module(module)
-                else:
-                    raise FileNotFoundError(f"Format '{module_name}' not found in database and local file {format_path} does not exist.")
+
+            # Load strictly from local project format file.
+            if os.path.exists(format_path):
+                logger.info(f"Loading format module '{module_name}' from local file: {format_path}")
+                spec = importlib.util.spec_from_file_location(module_name, format_path)
+                if spec is None or spec.loader is None:
+                    raise ImportError(f"Could not load spec from {format_path}")
+
+                if module_name in sys.modules:
+                    del sys.modules[module_name]
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+            else:
+                raise FileNotFoundError(f"Format '{module_name}' local file {format_path} does not exist.")
             
             logger.info(f"Successfully loaded format components for: {module_name}")
             
@@ -129,12 +108,29 @@ class FormatLoader:
         """
         Create validated response using format components.
         """
-        response_model = format_components['ResponseModel']
+        response_model = format_components.get('ResponseModel')
+        module_name = format_components.get('module_name', document_type.lower())
+
+        if response_model is None:
+            logger.error(
+                f"Validation skipped for {document_type}: ResponseModel missing in format module '{module_name}'. Returning unvalidated response."
+            )
+            return full_data
+        if not callable(response_model):
+            logger.error(
+                f"Validation skipped for {document_type}: ResponseModel in module '{module_name}' is not callable ({type(response_model).__name__}). Returning unvalidated response."
+            )
+            return full_data
         
         try:
             # Validate with Pydantic model
             validated_response = response_model(**full_data)
-            return validated_response.model_dump()
+            if hasattr(validated_response, "model_dump"):
+                return validated_response.model_dump()
+            logger.warning(
+                f"Validated response for {document_type} from module '{module_name}' has no model_dump(). Returning raw validated object."
+            )
+            return validated_response
         except Exception as e:
             logger.error(f"Validation failed for {document_type}: {e}")
             return full_data

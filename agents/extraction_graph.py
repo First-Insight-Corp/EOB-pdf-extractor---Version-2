@@ -11,8 +11,9 @@ from typing import TypedDict, Any, List, Optional, Tuple
 
 from langgraph.graph import START, END, StateGraph
 from agents.token_logger import TokenLogger
+from logs_config import get_extraction_logger
 
-logger = logging.getLogger(__name__)
+logger = get_extraction_logger()
 
 
 class ExtractionGraphState(TypedDict, total=False):

@@ -4,7 +4,7 @@ import time
 import os
 
 def test_ultimate_extraction(file_path, doc_type="vsp"):
-    url = "http://localhost:8000/api/v1/process-pdf"
+    url = "http://localhost:8040/api/v1/process-pdf"
     
     print(f"Testing ULTIMATE extraction for: {file_path}")
     

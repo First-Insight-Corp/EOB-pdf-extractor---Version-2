@@ -1,4 +1,8 @@
 {
-  "lessons": [],
+  "lessons": [
+    "When the visual text layout of a service line is misaligned or shifted, the model should prioritize extracting the data as it literally appears in the columns. While logical correction (as seen in the JSON) can produce a more accurate representation of the claim data, it fails the audit requirement of being a faithful extraction of the source text. The discrepancy should be noted, and the extraction should reflect the source text's literal (if incorrect) layout.",
+    "When a service line row is visibly misaligned or shifted in the source document, do not perform a literal column-to-value mapping that results in incorrect data types (e.g., a dollar amount for a procedure code, a remark code for a payment amount). The model should attempt to logically realign the data based on column headers and data patterns or flag the line as un-extractable. The processing note justifying the incorrect extraction is not an acceptable solution.",
+    "Section headers within the Adjustment Codes Glossary should not be extracted as a 'group' property for code entries, as this field is not defined in the schema and can be incorrectly propagated to subsequent unrelated codes."
+  ],
   "layout_patterns": {}
 }

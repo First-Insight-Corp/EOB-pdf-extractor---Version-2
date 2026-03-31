@@ -6,8 +6,9 @@ from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from config import config
+from logs_config import get_database_logger
 
-logger = logging.getLogger(__name__)
+logger = get_database_logger()
 
 # Base class for SQLAlchemy models
 Base = declarative_base()
@@ -24,6 +25,17 @@ class DocumentFormat(Base):
     # Relationship to processed files
     processed_files = relationship("ProcessedFile", back_populates="template")
 
+
+class LearningKnowledge(Base):
+    __tablename__ = 'learning_knowledge'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    format_name = Column(String(255), unique=True, nullable=False)
+    lessons = Column(JSON, nullable=False, default=list)
+    layout_patterns = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class ProcessedFile(Base):
     __tablename__ = 'processed_files'
 
@@ -34,6 +46,7 @@ class ProcessedFile(Base):
     file_type = Column(String(50), default='pdf')
     request_logs = Column(JSON, nullable=False)
     final_response = Column(JSON, nullable=True)
+    final_response_raw_text = Column(Text(length=16777215), nullable=True)
 
     # Relationship to document format
     template = relationship("DocumentFormat", back_populates="processed_files")
