@@ -309,6 +309,15 @@ class TrizettoRemittancePage(BaseModel):
             "Appears in the field labeled 'Non-payment #' instead of EFT/Check #."
         )
     )
+    eft_check_number: Optional[str] = Field(
+        None,
+        description=(
+            "EFT or Check reference number when check amount is greater than $0.00 "
+            "(e.g., '5260B1001797377'). Appears in the field labeled 'EFT #' or 'Check #'. "
+            "Use this when there is an actual payment. When check amount is $0.00, "
+            "use non_payment_number instead."
+        )
+    )
     npi_group_provider_number: Optional[str] = Field(
         None,
         description="NPI or Group Provider Number for the practice (e.g., '1538345269')."
@@ -380,10 +389,10 @@ SCHEMA_DESCRIPTION = """
 
 1. **DOCUMENT-LEVEL HEADER** (top of the first page):
    Fields (all labeled): Payer Name, Payer Address, Payee Name, Payee Address,
-   Provider #, Provider Tax ID #, Non-payment # (or Check #/EFT #),
+   Provider #, Provider Tax ID #, EFT #/Check # (or Non-payment #),
    NPI / Group Provider Number, Check Date, Created Date, Check Amount, Provider Adj Amt.
-   - IMPORTANT: When check amount is $0.00, the reference field is labeled "Non-payment #"
-     rather than "EFT #" or "Check #". Map this to `non_payment_number`.
+   - When check amount is greater than $0.00: map "EFT #" or "Check #" to `eft_check_number`
+   - When check amount is $0.00: map "Non-payment #" to `non_payment_number`
 
 2. **PATIENT CLAIM BLOCKS** (repeating):
    Header fields (all labeled):
@@ -430,7 +439,8 @@ SCHEMA_DESCRIPTION = """
 - `adjustment_codes` must capture ALL codes on each service line, space-separated.
 - `check_totals` is MANDATORY when a "TOTALS:" row exists in the Check Totals section.
 - `adjustment_code_glossary` must be fully extracted including all pages — do not return an empty list.
-- `non_payment_number` must be populated when the header shows "Non-payment #" instead of "EFT #".
+- `non_payment_number` must be populated when the header shows "Non-payment #" instead of "EFT #" or "Check #".
+- `eft_check_number` must be populated when the header shows "EFT #" or "Check #" and check amount is greater than $0.00.
 - `claim_status` can be "Processed as Primary", "Denied", or other values — capture exactly as printed.
 """
 
@@ -445,6 +455,7 @@ def build_trizetto_payload(extracted_claims: list, merged_meta: dict) -> dict:
             "provider_number": merged_meta.get("provider_number"),
             "provider_tax_id": merged_meta.get("provider_tax_id"),
             "non_payment_number": merged_meta.get("non_payment_number"),
+            "eft_check_number": merged_meta.get("eft_check_number"),
             "npi_group_provider_number": merged_meta.get("npi_group_provider_number"),
             "check_date": merged_meta.get("check_date"),
             "created_date": merged_meta.get("created_date"),
