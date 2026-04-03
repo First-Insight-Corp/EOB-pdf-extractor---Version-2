@@ -14,13 +14,13 @@ Extract structured insurance claims data from multi-page PDFs (e.g. VSP, EyeMed)
 2. **Install and run**
    ```bash
    pip install -r requirements.txt
-   uvicorn main:app --host 0.0.0.0 --port 8000
+   uvicorn main:app --host 0.0.0.0 --port 8040
    ```
    Or: `python main.py`
 
 3. **Process a PDF**
    ```bash
-   curl -X POST "http://localhost:8000/api/v1/process-pdf" \
+   curl -X POST "http://localhost:8040/api/v1/process-pdf" \
      -F "file=@your_document.pdf" \
      -F "document_type=vsp"
    ```

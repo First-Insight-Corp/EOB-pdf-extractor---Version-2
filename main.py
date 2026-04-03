@@ -6,6 +6,7 @@ import json
 import shutil
 import time
 import asyncio
+from collections import defaultdict
 from datetime import datetime
 from typing import Literal, Optional, Tuple, Any
 import logging
@@ -456,33 +457,131 @@ async def process_pdf(
 
 
 @app.get("/api/v1/responses")
-async def list_responses(include_raw_text: bool = Query(False)):
+async def list_responses(
+    include_raw_text: bool = Query(False),
+    include_metrics: bool = Query(False),
+    include_raw_request_logs: bool = Query(False),
+    page: Optional[int] = Query(None, ge=1),
+    page_size: Optional[int] = Query(None, ge=1, le=500),
+):
     """List all saved response files from Database"""
     try:
-        from db import db, ProcessedFile, DocumentFormat
+        from db import db, ProcessedFile, DocumentFormat, ExtractionTokenLog
         if not db:
             raise HTTPException(status_code=500, detail="Database not available")
             
         session = db.get_session()
-        # Fetch completed extractions (those with final_response or success status)
-        results = session.query(ProcessedFile, DocumentFormat.short_name).\
-            join(DocumentFormat, ProcessedFile.template_id == DocumentFormat.id, isouter=True).\
-            order_by(ProcessedFile.date_time.desc()).all()
+        # Fetch completed extractions (those with final_response or request logs)
+        base_query = session.query(ProcessedFile, DocumentFormat.short_name).\
+            join(DocumentFormat, ProcessedFile.template_id == DocumentFormat.id, isouter=True)
+
+        total_rows = base_query.count()
+        if page and page_size:
+            offset = (page - 1) * page_size
+            results = base_query.order_by(ProcessedFile.date_time.desc()).offset(offset).limit(page_size).all()
+        else:
+            results = base_query.order_by(ProcessedFile.date_time.desc()).all()
+
+        token_logs_by_file_id = defaultdict(list)
+        if include_metrics:
+            processed_ids = [record.processed_file_id for record, _ in results]
+            if processed_ids:
+                token_rows = session.query(ExtractionTokenLog).filter(
+                    ExtractionTokenLog.processed_file_id.in_(processed_ids)
+                ).all()
+                for token_row in token_rows:
+                    token_logs_by_file_id[token_row.processed_file_id].append(token_row)
         
         response_list = []
         for record, fmt_name in results:
             if not record.final_response and not record.request_logs:
                 continue
                 
+            request_logs = record.request_logs if isinstance(record.request_logs, dict) else {}
+            no_of_tokens = request_logs.get("no_of_tokens", {}) if isinstance(request_logs.get("no_of_tokens", {}), dict) else {}
+            total_tokens = no_of_tokens.get("total", {}) if isinstance(no_of_tokens.get("total", {}), dict) else {}
+
             response_item = {
                 "processed_id": record.processed_file_id,
                 "document_type": (fmt_name or "unknown").upper(),
                 "timestamp": record.date_time.isoformat(),
-                "status": record.request_logs.get("status", "unknown") if isinstance(record.request_logs, dict) else "unknown",
-                "request_id": record.request_logs.get("request_id", "N/A") if isinstance(record.request_logs, dict) else "N/A",
-                "pages": record.request_logs.get("no_of_pages", 0) if isinstance(record.request_logs, dict) else 0,
-                "response_file": record.request_logs.get("response_file") if isinstance(record.request_logs, dict) else None,
+                "status": request_logs.get("status", "unknown"),
+                "request_id": request_logs.get("request_id", "N/A"),
+                "pages": request_logs.get("no_of_pages", 0),
+                "response_file": request_logs.get("response_file"),
             }
+
+            if include_metrics:
+                input_tokens = int(total_tokens.get("input", 0) or 0)
+                output_tokens = int(total_tokens.get("output", 0) or 0)
+                by_role = no_of_tokens.get("by_role", {}) if isinstance(no_of_tokens.get("by_role", {}), dict) else {}
+                llm_used = request_logs.get("llm_used")
+                metrics_source = "request_logs"
+
+                # Fallback for historical rows where token/time metadata was not fully persisted in request_logs.
+                if input_tokens == 0 and output_tokens == 0:
+                    fallback_rows = token_logs_by_file_id.get(record.processed_file_id, [])
+                    if fallback_rows:
+                        fallback_by_role = {"extractor": {}, "auditor": {}, "critic": {}}
+                        fallback_input = 0
+                        fallback_output = 0
+                        models_seen = set()
+
+                        for token_row in fallback_rows:
+                            step = (token_row.step or "").lower()
+                            if "auditor" in step:
+                                role = "auditor"
+                            elif "critic" in step:
+                                role = "critic"
+                            else:
+                                role = "extractor"
+
+                            model_name = token_row.model_name or "unknown-model"
+                            models_seen.add(model_name)
+
+                            if model_name not in fallback_by_role[role]:
+                                fallback_by_role[role][model_name] = {"input": 0, "output": 0}
+
+                            row_input = int(token_row.input_tokens or 0)
+                            row_output = int(token_row.output_tokens or 0)
+                            fallback_by_role[role][model_name]["input"] += row_input
+                            fallback_by_role[role][model_name]["output"] += row_output
+                            fallback_input += row_input
+                            fallback_output += row_output
+
+                        input_tokens = fallback_input
+                        output_tokens = fallback_output
+                        by_role = fallback_by_role
+                        if not llm_used and models_seen:
+                            llm_used = " | ".join(sorted(models_seen))
+                        metrics_source = "token_logs_fallback"
+                    else:
+                        metrics_source = "none"
+
+                response_item["request_logs_summary"] = {
+                    "time_taken_to_process": request_logs.get("time_taken_to_process"),
+                    "no_of_pages": request_logs.get("no_of_pages", 0),
+                    "no_of_iterations": request_logs.get("no_of_iterations", 0),
+                    "batches_processed": request_logs.get("batches_processed", 0),
+                    "llm_used": llm_used,
+                    "file_size": request_logs.get("file_size"),
+                    "original_filename": request_logs.get("original_filename"),
+                    "saved_filename": request_logs.get("saved_filename"),
+                    "response_file": request_logs.get("response_file"),
+                    "error": request_logs.get("error"),
+                    "metrics_source": metrics_source,
+                    "no_of_tokens": {
+                        "total": {
+                            "input": input_tokens,
+                            "output": output_tokens,
+                            "total": input_tokens + output_tokens,
+                        },
+                        "by_role": by_role,
+                    },
+                }
+
+            if include_raw_request_logs:
+                response_item["request_logs"] = request_logs
 
             if include_raw_text:
                 response_item["response_raw_text"] = record.final_response_raw_text or (
@@ -493,11 +592,99 @@ async def list_responses(include_raw_text: bool = Query(False)):
         
         session.close()
         return {
+            "page": page,
+            "page_size": page_size,
+            "total_records": total_rows,
             "total_responses": len(response_list),
             "responses": response_list
         }
     except Exception as e:
         logger.error(f"Error listing responses from DB: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/token-details")
+async def list_token_details(
+    include_raw_request_logs: bool = Query(True),
+    page: Optional[int] = Query(None, ge=1),
+    page_size: Optional[int] = Query(None, ge=1, le=500),
+):
+    """List token and runtime metrics sourced from processed_files.request_logs."""
+    try:
+        from db import db, ProcessedFile, DocumentFormat
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+
+        session = db.get_session()
+
+        base_query = session.query(ProcessedFile, DocumentFormat.short_name).\
+            join(DocumentFormat, ProcessedFile.template_id == DocumentFormat.id, isouter=True)
+
+        total_rows = base_query.count()
+        if page and page_size:
+            offset = (page - 1) * page_size
+            results = base_query.order_by(ProcessedFile.date_time.desc()).offset(offset).limit(page_size).all()
+        else:
+            results = base_query.order_by(ProcessedFile.date_time.desc()).all()
+
+        response_list = []
+        for record, fmt_name in results:
+            request_logs = record.request_logs if isinstance(record.request_logs, dict) else {}
+            if not request_logs:
+                continue
+
+            no_of_tokens = request_logs.get("no_of_tokens", {}) if isinstance(request_logs.get("no_of_tokens", {}), dict) else {}
+            total_tokens = no_of_tokens.get("total", {}) if isinstance(no_of_tokens.get("total", {}), dict) else {}
+            input_tokens = int(total_tokens.get("input", 0) or 0)
+            output_tokens = int(total_tokens.get("output", 0) or 0)
+
+            item = {
+                "processed_id": record.processed_file_id,
+                "document_type": (fmt_name or "unknown").upper(),
+                "timestamp": record.date_time.isoformat() if record.date_time else None,
+                "status": request_logs.get("status", "unknown"),
+                "request_id": request_logs.get("request_id", "N/A"),
+                "pages": request_logs.get("no_of_pages", 0),
+                "response_file": request_logs.get("response_file"),
+                "request_logs_summary": {
+                    "time_taken_to_process": request_logs.get("time_taken_to_process"),
+                    "no_of_pages": request_logs.get("no_of_pages", 0),
+                    "no_of_iterations": request_logs.get("no_of_iterations", 0),
+                    "batches_processed": request_logs.get("batches_processed", 0),
+                    "llm_used": request_logs.get("llm_used"),
+                    "file_size": request_logs.get("file_size"),
+                    "original_filename": request_logs.get("original_filename"),
+                    "saved_filename": request_logs.get("saved_filename"),
+                    "response_file": request_logs.get("response_file"),
+                    "error": request_logs.get("error"),
+                    "metrics_source": "request_logs",
+                    "no_of_tokens": {
+                        "total": {
+                            "input": input_tokens,
+                            "output": output_tokens,
+                            "total": input_tokens + output_tokens,
+                        },
+                        "by_role": no_of_tokens.get("by_role", {}),
+                    },
+                },
+            }
+
+            if include_raw_request_logs:
+                item["request_logs"] = request_logs
+
+            response_list.append(item)
+
+        session.close()
+
+        return {
+            "page": page,
+            "page_size": page_size,
+            "total_records": total_rows,
+            "total_responses": len(response_list),
+            "responses": response_list,
+        }
+    except Exception as e:
+        logger.error(f"Error listing token details from DB: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
