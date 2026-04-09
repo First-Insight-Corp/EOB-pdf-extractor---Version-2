@@ -2,7 +2,7 @@ import logging
 import pymysql
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from config import config
@@ -47,6 +47,8 @@ class ProcessedFile(Base):
     request_logs = Column(JSON, nullable=False)
     final_response = Column(JSON, nullable=True)
     final_response_raw_text = Column(Text(length=16777215), nullable=True)
+    total_cost = Column(Float, default=0.0, nullable=True)
+    cost_breakdown = Column(JSON, nullable=True)
 
     # Relationship to document format
     template = relationship("DocumentFormat", back_populates="processed_files")

@@ -1,6 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, BackgroundTasks
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import ast
 import os
 import json
 import shutil
@@ -26,6 +27,7 @@ from agents.agent_factory import get_extraction_agent, get_auditor_agent, get_cr
 from agents.extraction_graph import build_extraction_graph, run_extraction_workflow
 from agents.token_logger import TokenLogger
 from agents.format_generator_agent import FormatGeneratorAgent
+from cost_calculator import get_cost_breakdown
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -38,6 +40,10 @@ app = FastAPI(
 class KnowledgeUpdateRequest(BaseModel):
     lessons: Optional[list] = None
     layout_patterns: Optional[dict] = None
+
+
+class DocumentFormatUpdateRequest(BaseModel):
+    python_code: str
 
 # Add CORS middleware
 app.add_middleware(
@@ -135,6 +141,70 @@ async def list_document_formats(include_code: bool = Query(False)):
     except Exception as e:
         logger.error(f"Error listing document formats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/v1/document-formats/{format_id}")
+async def update_document_format(format_id: int, payload: DocumentFormatUpdateRequest):
+    """Update template python code in DB and local formats/*.py file."""
+    session = None
+    try:
+        from db import db, DocumentFormat
+
+        if not db:
+            raise HTTPException(status_code=500, detail="Database not available")
+
+        updated_code = (payload.python_code or "").strip()
+        if not updated_code:
+            raise HTTPException(status_code=400, detail="python_code cannot be empty")
+
+        try:
+            ast.parse(updated_code)
+        except SyntaxError as parse_err:
+            raise HTTPException(status_code=400, detail=f"Invalid Python code: {parse_err.msg}")
+
+        session = db.get_session()
+        record = session.query(DocumentFormat).filter_by(id=format_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Template with ID {format_id} not found")
+
+        format_path = config.get_format_file(record.short_name)
+        os.makedirs(config.FORMATS_DIR, exist_ok=True)
+        with open(format_path, "w", encoding="utf-8") as f:
+            f.write(updated_code)
+
+        record.python_code = updated_code
+        record.updated_at = datetime.utcnow()
+        session.commit()
+
+        config.SUPPORTED_FORMATS = config.get_supported_formats()
+        log_db_operation("UPDATE", "DocumentFormat", "Success", f"ID {format_id}")
+
+        updated_payload = {
+            "id": record.id,
+            "short_name": record.short_name,
+            "python_code": record.python_code,
+            "created_at": record.created_at.isoformat() if record.created_at else None,
+            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+        }
+
+        return {
+            "status": "success",
+            "message": f"Template {record.short_name} updated successfully",
+            "format": updated_payload,
+            "format_raw_text": record.python_code,
+        }
+    except HTTPException:
+        if session:
+            session.rollback()
+        raise
+    except Exception as e:
+        if session:
+            session.rollback()
+        logger.error(f"Error updating template {format_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if session:
+            session.close()
 
 
 def run_background_extraction(
@@ -310,6 +380,15 @@ def run_background_extraction(
                 processed_entry = session.query(ProcessedFile).get(processed_file_id)
                 if processed_entry:
                     llm_used_str = " | ".join(list(llm_usage_breakdown.keys()))
+                    
+                    # Calculate cost breakdown
+                    token_breakdown = {
+                        "total": {"input": total_input_tokens, "output": total_output_tokens},
+                        "by_role": total_role_usage,
+                    }
+                    cost_breakdown = get_cost_breakdown(token_breakdown)
+                    total_cost = cost_breakdown.get("total", 0.0)
+                    
                     processed_entry.request_logs = {
                         "status": "success",
                         "time_taken_to_process": round(time.time() - start_time, 2),
@@ -326,10 +405,14 @@ def run_background_extraction(
                         "saved_filename": saved_filename,
                         "response_file": os.path.basename(response_path),
                         "batches_processed": total_batches,
+                        "cost_breakdown": cost_breakdown,
                     }
+                    processed_entry.total_cost = total_cost
+                    processed_entry.cost_breakdown = cost_breakdown
                     processed_entry.final_response = structured_response
                     processed_entry.final_response_raw_text = json.dumps(structured_response, indent=2)
                     session.commit()
+                    logger.info(f"[{request_id}] Total processing cost: ${total_cost:.4f}")
             finally:
                 session.close()
     except Exception as e:
@@ -341,14 +424,32 @@ def run_background_extraction(
             try:
                 processed_entry = session.query(ProcessedFile).get(processed_file_id)
                 if processed_entry:
+                    # Even on failure, calculate cost for partial processing
+                    cost_breakdown = None
+                    total_cost = 0.0
+                    
+                    if total_input_tokens > 0 or total_output_tokens > 0:
+                        token_breakdown = {
+                            "total": {"input": total_input_tokens, "output": total_output_tokens},
+                            "by_role": total_role_usage,
+                        }
+                        cost_breakdown = get_cost_breakdown(token_breakdown)
+                        total_cost = cost_breakdown.get("total", 0.0)
+                    
                     processed_entry.request_logs = {
                         "status": "failed",
                         "request_id": request_id,
                         "original_filename": original_filename,
                         "saved_filename": saved_filename,
                         "error": str(e),
+                        "partial_cost": total_cost if total_cost > 0 else None,
+                        "cost_breakdown": cost_breakdown,
                     }
+                    processed_entry.total_cost = total_cost
+                    processed_entry.cost_breakdown = cost_breakdown
                     session.commit()
+                    if total_cost > 0:
+                        logger.info(f"[{request_id}] Partial processing cost (failed): ${total_cost:.4f}")
             finally:
                 session.close()
     finally:
@@ -509,6 +610,7 @@ async def list_responses(
                 "request_id": request_logs.get("request_id", "N/A"),
                 "pages": request_logs.get("no_of_pages", 0),
                 "response_file": request_logs.get("response_file"),
+                "total_cost": record.total_cost or 0.0,
             }
 
             if include_metrics:
@@ -578,6 +680,11 @@ async def list_responses(
                         },
                         "by_role": by_role,
                     },
+                    "cost": {
+                        "total": record.total_cost or 0.0,
+                        "currency": "USD",
+                        "breakdown": request_logs.get("cost_breakdown") or record.cost_breakdown,
+                    }
                 }
 
             if include_raw_request_logs:
