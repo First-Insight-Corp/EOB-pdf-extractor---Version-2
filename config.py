@@ -65,6 +65,7 @@ class APIConfig:
     MAX_REFINEMENT_RETRIES = int(os.getenv("MAX_REFINEMENT_RETRIES", 3))
     MAX_AUDITOR_CRITIC_LOOPS = int(os.getenv("MAX_AUDITOR_CRITIC_LOOPS", 4))  # Extraction → Auditor → Critic → re-extract
     PDF_DPI = int(os.getenv("PDF_DPI", 300))
+    MAX_IMAGE_DIMENSION = int(os.getenv("MAX_IMAGE_DIMENSION", 4000))
     
     # Directory Configuration
     UPLOAD_DIR = "uploads"
