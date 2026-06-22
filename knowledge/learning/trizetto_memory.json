@@ -1,0 +1,11 @@
+{
+  "lessons": [
+    "For each service line, build adjustment_codes_with_values by pairing entries from the Other Adjusts column with entries from the Adjust Codes column in visual top-to-bottom order.",
+    "When Other Adjusts shows stacked amounts and Adjust Codes shows stacked codes (for example CO-253 and CO-45), extract all pairs, not only one combined value.",
+    "Do not return null for adjustment_codes_with_values. If no adjustment data exists on a service line, return an empty array [].",
+    "If only one side is present, still preserve extracted data by emitting partial pairs (code with null value, or value with null code) rather than dropping the entry.",
+    "Do not map SERVICE LINE TOTALS into services. Totals must stay under claim_totals even when adjustment columns are populated.",
+    "When claim-level payment is 0.00 in non-payment remittances, service-line adjustment pairs can still be present and must still be extracted completely."
+  ],
+  "layout_patterns": {}
+}

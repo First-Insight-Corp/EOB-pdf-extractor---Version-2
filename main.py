@@ -1,6 +1,7 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.datastructures import UploadFile as StarletteUploadFile
 import ast
 import os
 import json
@@ -9,7 +10,7 @@ import time
 import asyncio
 from collections import defaultdict
 from datetime import datetime
-from typing import Literal, Optional, Tuple, Any
+from typing import Literal, Optional, Tuple, Any, List
 import logging
 import uuid
 from pydantic import BaseModel
@@ -28,12 +29,23 @@ from agents.extraction_graph import build_extraction_graph, run_extraction_workf
 from agents.token_logger import TokenLogger
 from agents.format_generator_agent import FormatGeneratorAgent
 from cost_calculator import get_cost_breakdown
+from utils.image_pdf import convert_images_to_pdf, merge_pdfs, sanitize_filename, ALLOWED_IMAGE_EXTS
+from PyPDF2 import PdfReader
+
+from fastmcp import FastMCP
+from azure_blob import upload_to_blob, download_from_blob, delete_blob
+import httpx
+
+# Initialize FastMCP Server
+mcp = FastMCP("EOB-Claims-Extraction-Server")
+mcp_app = mcp.http_app(path="/mcp", transport="http")
 
 # Initialize FastAPI app
 app = FastAPI(
     title="PDF Claims Extraction API",
     description="Extract structured insurance claims data using Background Tasks",
-    version="1.1.0"
+    version="1.1.0",
+    lifespan=mcp_app.lifespan
 )
 
 
@@ -454,25 +466,89 @@ def run_background_extraction(
                 session.close()
     finally:
         pdf_processor.close()
-        if os.path.exists(file_path):
-            os.remove(file_path)
+
+        # Remove the main merged/processed PDF file_path if present
+        try:
+            if file_path and os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            logger.exception(f"Error removing main file_path {file_path}")
+
+        try:
+            delete_blob(saved_filename)
+        except Exception:
+            pass
+
+        # Attempt to remove uploaded images recorded in DB request_logs for this processed_file_id
+        try:
+            from db import db, ProcessedFile
+            uploaded_list = []
+            if db and processed_file_id:
+                session = db.get_session()
+                try:
+                    record = session.query(ProcessedFile).get(processed_file_id)
+                    if record:
+                        if isinstance(record.request_logs, dict):
+                            uploaded_list = record.request_logs.get("uploaded_images", []) or []
+                        else:
+                            try:
+                                uploaded_list = json.loads(record.request_logs).get("uploaded_images", []) or []
+                            except Exception:
+                                uploaded_list = []
+                finally:
+                    session.close()
+
+            # Remove files explicitly listed in uploaded_images
+            for fn in uploaded_list:
+                p = os.path.join(config.UPLOAD_DIR, fn)
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                except Exception:
+                    logger.exception(f"Failed to remove uploaded image file {p}")
+
+            # Remove any temp files that share the timestamp prefix from the saved filename
+            try:
+                prefix = saved_filename[:15] if saved_filename else None
+                if prefix and os.path.isdir(config.UPLOAD_DIR):
+                    for fname in os.listdir(config.UPLOAD_DIR):
+                        if fname.startswith(f"{prefix}_img_") or fname in (f"{prefix}_images.pdf", f"{prefix}_merged.pdf"):
+                            p = os.path.join(config.UPLOAD_DIR, fname)
+                            try:
+                                if os.path.exists(p):
+                                    os.remove(p)
+                            except Exception:
+                                logger.exception(f"Failed to remove temp upload {p}")
+            except Exception:
+                logger.exception("Error during upload temp files cleanup")
+        except Exception:
+            logger.exception("Unexpected error while cleaning up uploaded files")
 
 
 @app.post("/api/v1/process-pdf")
 async def process_pdf(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    document_type: str = Form(...),
+    request: Request,
 ):
     try:
         get_extraction_agent()
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    if not file.filename or not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
-
     request_id = str(uuid.uuid4())
+
+    # Parse form data manually to avoid FastAPI validation errors on multipart
+    try:
+        form_data = await request.form()
+    except Exception as e:
+        logger.error(f"[{request_id}] Failed to parse form data: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid multipart form data: {str(e)}")
+
+    # Extract document_type from form (required)
+    document_type = form_data.get("document_type")
+    if not document_type:
+        raise HTTPException(status_code=400, detail="document_type field is required")
+
     doc_type_lower = document_type.lower().strip()
 
     if doc_type_lower not in config.SUPPORTED_FORMATS:
@@ -484,17 +560,179 @@ async def process_pdf(
     log_api_request("/api/v1/process-pdf", "POST", request_id)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    original_filename = file.filename.replace(" ", "_")
-    saved_filename = f"{timestamp}_{original_filename}"
-    file_path = os.path.join(config.UPLOAD_DIR, saved_filename)
+    merged_pdf_path = None
+    saved_pdf_path = None
+    images_pdf = None
+    saved_image_paths: list[str] = []
+    original_filename = "images_upload"
+    saved_filename = None
 
-    current_processed_file_id = None
+    def normalize_uploaded_images(raw_images: Any) -> list[UploadFile]:
+        def _looks_like_upload_file(obj: Any) -> bool:
+            return isinstance(obj, (UploadFile, StarletteUploadFile)) or (
+                hasattr(obj, "filename") and hasattr(obj, "file")
+            )
+
+        if raw_images is None:
+            return []
+        if isinstance(raw_images, (list, tuple)):
+            out: list[UploadFile] = []
+            for item in raw_images:
+                out.extend(normalize_uploaded_images(item))
+            return out
+        if _looks_like_upload_file(raw_images):
+            return [raw_images]
+        return []
+
+    def collect_uploaded_images_from_form(form_data: Any) -> list[UploadFile]:
+        """Collect every uploaded image from form keys images/images[] robustly."""
+        out: list[UploadFile] = []
+        seen_ids: set[int] = set()
+        if not hasattr(form_data, "multi_items"):
+            return out
+        for key, value in form_data.multi_items():
+            # Accept explicit images keys, but also accept any uploaded file under other keys
+            if not (
+                isinstance(value, (UploadFile, StarletteUploadFile))
+                or (hasattr(value, "filename") and hasattr(value, "file"))
+            ):
+                continue
+            # Skip PDF field labeled 'file' here - that will be handled separately
+            if key == 'file':
+                continue
+            marker = id(value)
+            if marker in seen_ids:
+                continue
+            seen_ids.add(marker)
+            out.append(value)
+        return out
+
     try:
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # Debug: log received form keys and which entries look like files
+        try:
+            keys = list(form_data.keys())
+            file_info = []
+            if hasattr(form_data, 'multi_items'):
+                for k, v in form_data.multi_items():
+                    if isinstance(v, (UploadFile, StarletteUploadFile)) or (hasattr(v, 'filename') and hasattr(v, 'file')):
+                        file_info.append({'key': k, 'filename': getattr(v, 'filename', None)})
+            logger.info(f"[{request_id}] Received form keys: {keys}, file_fields: {file_info}")
+        except Exception:
+            logger.exception(f"[{request_id}] Failed to inspect form data for debugging")
 
-        file_size = os.path.getsize(file_path)
+        form_images = collect_uploaded_images_from_form(form_data)
+        # Also accept any uploaded file values under non-file keys as images
+        if not form_images and hasattr(form_data, 'multi_items'):
+            fallback_images = []
+            for k, v in form_data.multi_items():
+                if k == 'file':
+                    continue
+                if isinstance(v, (UploadFile, StarletteUploadFile)) or (hasattr(v, 'filename') and hasattr(v, 'file')):
+                    fallback_images.append(v)
+            if fallback_images:
+                logger.info(f"[{request_id}] Collected {len(fallback_images)} fallback images from form multipart fields")
+                form_images = fallback_images
 
+        # Use only the form-collected uploads to avoid FastAPI param parsing issues with repeated keys
+        normalized_images = form_images or []
+
+        # Attempt to extract an uploaded 'file' (PDF) from the raw form data
+        file = None
+        try:
+            # direct lookup (FormData may expose the UploadFile directly)
+            if "file" in form_data:
+                file = form_data.get("file")
+        except Exception:
+            file = None
+
+        if not file:
+            # fallback: iterate multi_items to find key 'file'
+            try:
+                for k, v in form_data.multi_items():
+                    if k == "file" and (isinstance(v, (UploadFile, StarletteUploadFile)) or (hasattr(v, "filename") and hasattr(v, "file"))):
+                        file = v
+                        break
+            except Exception:
+                pass
+
+        # Build filenames now that we know whether a PDF was uploaded
+        original_filename = (file.filename if file else "images_upload").replace(" ", "_")
+        saved_filename = f"{timestamp}_{original_filename}"
+
+        if not file and not normalized_images:
+            raise HTTPException(status_code=400, detail="Must upload a PDF or at least one image")
+
+        # Save uploaded PDF (if present)
+        if file:
+            if not file.filename or not file.filename.lower().endswith('.pdf'):
+                raise HTTPException(status_code=400, detail="Uploaded file must be a PDF")
+            saved_pdf_path = os.path.join(config.UPLOAD_DIR, saved_filename)
+            with open(saved_pdf_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+
+        # Save uploaded images (if any)
+        if normalized_images:
+            logger.info(f"[{request_id}] Received {len(normalized_images)} image file(s) in request")
+            for idx, img in enumerate(normalized_images):
+                if not img.filename:
+                    continue
+                _, ext = os.path.splitext(img.filename)
+                ext = ext.lower()
+                if ext not in ALLOWED_IMAGE_EXTS:
+                    raise HTTPException(status_code=400, detail=f"Unsupported image type: {ext}")
+                safe_name = sanitize_filename(img.filename)
+                img_saved = os.path.join(config.UPLOAD_DIR, f"{timestamp}_img_{idx}_{safe_name}")
+                with open(img_saved, "wb") as buf:
+                    shutil.copyfileobj(img.file, buf)
+                saved_image_paths.append(img_saved)
+
+        # If images were uploaded, convert them to a PDF
+        if saved_image_paths:
+            images_pdf = os.path.join(config.UPLOAD_DIR, f"{timestamp}_images.pdf")
+            convert_images_to_pdf(saved_image_paths, images_pdf)
+            generated_pages = len(PdfReader(images_pdf).pages)
+            logger.info(
+                f"[{request_id}] Image-to-PDF conversion result: input_images={len(saved_image_paths)}, output_pages={generated_pages}"
+            )
+            if generated_pages != len(saved_image_paths):
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Image conversion page mismatch. "
+                        f"Received {len(saved_image_paths)} image(s), generated {generated_pages} PDF page(s)."
+                    ),
+                )
+
+        # Merge original PDF + images PDF if both exist
+        if saved_pdf_path and images_pdf:
+            merged_pdf_path = os.path.join(config.UPLOAD_DIR, f"{timestamp}_merged.pdf")
+            merge_pdfs([saved_pdf_path, images_pdf], merged_pdf_path)
+        elif saved_pdf_path:
+            merged_pdf_path = saved_pdf_path
+        else:
+            raise HTTPException(status_code=400, detail="No valid input to process")
+
+        # Upload to Azure Blob and download back (Azure Storage cycle)
+        blob_name = os.path.basename(merged_pdf_path)
+        try:
+            upload_to_blob(merged_pdf_path, blob_name)
+            if os.path.exists(merged_pdf_path):
+                os.remove(merged_pdf_path)
+            download_from_blob(blob_name, merged_pdf_path)
+        except Exception as storage_err:
+            logger.error(f"[{request_id}] Azure Storage workflow error: {storage_err}")
+            for p in [saved_pdf_path, images_pdf, merged_pdf_path]:
+                if p and os.path.exists(p):
+                    try: os.remove(p)
+                    except: pass
+            for p in saved_image_paths:
+                if os.path.exists(p):
+                    try: os.remove(p)
+                    except: pass
+            raise HTTPException(status_code=500, detail=f"Azure Storage failure: {str(storage_err)}")
+
+        # Record DB entry
+        file_size = os.path.getsize(merged_pdf_path) if os.path.exists(merged_pdf_path) else 0
         from db import db, ProcessedFile, DocumentFormat
 
         if not db:
@@ -505,13 +743,15 @@ async def process_pdf(
             fmt = session.query(DocumentFormat).filter_by(short_name=doc_type_lower).first()
             processed_entry = ProcessedFile(
                 template_id=fmt.id if fmt else None,
-                file_path=saved_filename,
-                file_type="pdf",
+                file_path=os.path.basename(merged_pdf_path),
+                file_type="mixed" if (saved_pdf_path and saved_image_paths) else ("pdf" if saved_pdf_path else "image"),
                 request_logs={
                     "status": "processing",
                     "request_id": request_id,
                     "original_filename": original_filename,
-                    "saved_filename": saved_filename,
+                    "saved_filename": os.path.basename(merged_pdf_path),
+                    "uploaded_images": [os.path.basename(p) for p in saved_image_paths],
+                    "images_count": len(saved_image_paths),
                 },
             )
             session.add(processed_entry)
@@ -521,13 +761,14 @@ async def process_pdf(
         finally:
             session.close()
 
+        # Queue background task with merged PDF path
         background_tasks.add_task(
             run_background_extraction,
             current_processed_file_id,
-            file_path,
+            merged_pdf_path,
             doc_type_lower,
             original_filename,
-            saved_filename,
+            os.path.basename(merged_pdf_path),
             request_id,
             file_size,
         )
@@ -542,19 +783,27 @@ async def process_pdf(
             },
         )
     except HTTPException:
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
+        # cleanup on error
+        for p in [saved_pdf_path, images_pdf, merged_pdf_path]:
+            if p and os.path.exists(p):
+                try: os.remove(p)
+                except: pass
+        for p in saved_image_paths:
+            if os.path.exists(p):
+                try: os.remove(p)
+                except: pass
         raise
     except Exception as e:
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"Error queuing PDF processing: {str(e)}")
+        # cleanup on unexpected error
+        for p in [saved_pdf_path, images_pdf, merged_pdf_path]:
+            if p and os.path.exists(p):
+                try: os.remove(p)
+                except: pass
+        for p in saved_image_paths:
+            if os.path.exists(p):
+                try: os.remove(p)
+                except: pass
+        raise HTTPException(status_code=500, detail=f"Error queuing processing: {str(e)}")
 
 
 @app.get("/api/v1/responses")
@@ -744,6 +993,8 @@ async def list_token_details(
             total_tokens = no_of_tokens.get("total", {}) if isinstance(no_of_tokens.get("total", {}), dict) else {}
             input_tokens = int(total_tokens.get("input", 0) or 0)
             output_tokens = int(total_tokens.get("output", 0) or 0)
+            cost_breakdown = request_logs.get("cost_breakdown") if isinstance(request_logs.get("cost_breakdown"), dict) else record.cost_breakdown
+            total_cost = record.total_cost or (cost_breakdown.get("total", 0.0) if isinstance(cost_breakdown, dict) else 0.0)
 
             item = {
                 "processed_id": record.processed_file_id,
@@ -753,6 +1004,8 @@ async def list_token_details(
                 "request_id": request_logs.get("request_id", "N/A"),
                 "pages": request_logs.get("no_of_pages", 0),
                 "response_file": request_logs.get("response_file"),
+                "total_cost": total_cost,
+                "cost_breakdown": cost_breakdown,
                 "request_logs_summary": {
                     "time_taken_to_process": request_logs.get("time_taken_to_process"),
                     "no_of_pages": request_logs.get("no_of_pages", 0),
@@ -772,6 +1025,11 @@ async def list_token_details(
                             "total": input_tokens + output_tokens,
                         },
                         "by_role": no_of_tokens.get("by_role", {}),
+                    },
+                    "cost": {
+                        "total": total_cost,
+                        "currency": "USD",
+                        "breakdown": cost_breakdown,
                     },
                 },
             }
@@ -1128,6 +1386,20 @@ async def generate_format_endpoint(
     try:
         with open(temp_path, "wb") as f:
             f.write(await pdf_file.read())
+
+        # Upload to Azure Blob and download back (Azure Storage cycle)
+        blob_name = f"temp_gen_{pdf_file.filename}"
+        try:
+            upload_to_blob(temp_path, blob_name)
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            download_from_blob(blob_name, temp_path)
+        except Exception as storage_err:
+            logger.error(f"Azure Storage workflow error during format gen: {storage_err}")
+            if os.path.exists(temp_path):
+                try: os.remove(temp_path)
+                except: pass
+            raise HTTPException(status_code=500, detail=f"Azure Storage failure: {str(storage_err)}")
         
         pdf_processor = PDFProcessor(temp_path)
         total_pages = pdf_processor.get_total_pages()
@@ -1187,7 +1459,205 @@ async def generate_format_endpoint(
                 os.remove(temp_path)
             except Exception as e:
                 logger.warning(f"Failed to remove temp file {temp_path}: {e}")
+        try:
+            delete_blob(blob_name)
+        except Exception:
+            pass
 
+
+# Helper to download from URL
+async def _download_file(url: str, destination: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                with open(destination, "wb") as f:
+                    f.write(response.content)
+                return True
+    except Exception as e:
+        logger.error(f"Error downloading {url}: {e}")
+    return False
+
+# 1. Process PDF Tool
+@mcp.tool()
+async def process_pdf_url(file_url: str, document_type: str) -> str:
+    """
+    Download and process an insurance Claim PDF from a URL to extract structured claims data.
+    
+    Args:
+        file_url: Direct URL to the PDF file.
+        document_type: The format type (e.g. eye_med, vsp, etc.).
+    """
+    doc_type_lower = document_type.lower().strip()
+    if doc_type_lower not in config.SUPPORTED_FORMATS:
+        return f"Error: Unsupported document type. Supported formats: {config.SUPPORTED_FORMATS}"
+        
+    request_id = str(uuid.uuid4())
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    original_filename = "mcp_download_" + os.path.basename(file_url).replace(" ", "_")
+    saved_filename = f"{timestamp}_{original_filename}"
+    merged_pdf_path = os.path.join(config.UPLOAD_DIR, saved_filename)
+    
+    if not await _download_file(file_url, merged_pdf_path):
+        return f"Error: Failed to download PDF file from {file_url}"
+        
+    # Upload to Azure Blob and download back (Azure Storage cycle)
+    blob_name = saved_filename
+    try:
+        upload_to_blob(merged_pdf_path, blob_name)
+        if os.path.exists(merged_pdf_path):
+            os.remove(merged_pdf_path)
+        download_from_blob(blob_name, merged_pdf_path)
+    except Exception as storage_err:
+        if os.path.exists(merged_pdf_path):
+            os.remove(merged_pdf_path)
+        return f"Error: Azure Storage failure: {str(storage_err)}"
+        
+    # Record DB entry
+    file_size = os.path.getsize(merged_pdf_path) if os.path.exists(merged_pdf_path) else 0
+    from db import db, ProcessedFile, DocumentFormat
+    
+    if not db:
+        if os.path.exists(merged_pdf_path):
+            os.remove(merged_pdf_path)
+        return "Error: Database not available"
+        
+    session = db.get_session()
+    try:
+        fmt = session.query(DocumentFormat).filter_by(short_name=doc_type_lower).first()
+        processed_entry = ProcessedFile(
+            template_id=fmt.id if fmt else None,
+            file_path=saved_filename,
+            file_type="pdf",
+            request_logs={
+                "status": "processing",
+                "request_id": request_id,
+                "original_filename": original_filename,
+                "saved_filename": saved_filename,
+                "uploaded_images": [],
+                "images_count": 0,
+            },
+        )
+        session.add(processed_entry)
+        session.commit()
+        current_processed_file_id = processed_entry.processed_file_id
+    except Exception as db_err:
+        if os.path.exists(merged_pdf_path):
+            os.remove(merged_pdf_path)
+        return f"Error: DB logging failed: {str(db_err)}"
+    finally:
+        session.close()
+        
+    # Launch background extraction task
+    asyncio.create_task(asyncio.to_thread(
+        run_background_extraction,
+        current_processed_file_id,
+        merged_pdf_path,
+        doc_type_lower,
+        original_filename,
+        saved_filename,
+        request_id,
+        file_size
+    ))
+    
+    # Wait for completion using the existing get_response route handler
+    try:
+        response = await get_response(processed_id=current_processed_file_id, wait_for_completion=True)
+        if isinstance(response, JSONResponse):
+            return response.body.decode("utf-8")
+        else:
+            return json.dumps(response)
+    except Exception as e:
+        return f"Error during extraction wait: {str(e)}"
+
+# 2. Generate Format Tool
+@mcp.tool()
+async def generate_format_url(file_url: str, short_name: str, use_azure_di: bool = False) -> str:
+    """
+    Download a sample PDF from a URL and generate a new Pydantic format file template.
+    
+    Args:
+        file_url: Direct URL to the sample PDF document.
+        short_name: Unique short name for the format (e.g. eye_med).
+        use_azure_di: Use Azure Document Intelligence for improved layout detection.
+    """
+    original_filename = os.path.basename(file_url).replace(" ", "_")
+    temp_path = os.path.join(config.UPLOAD_DIR, f"temp_gen_{original_filename}")
+    
+    if not await _download_file(file_url, temp_path):
+        return f"Error: Failed to download sample PDF from {file_url}"
+        
+    # Upload to Azure Blob and download back (Azure Storage cycle)
+    blob_name = f"temp_gen_{original_filename}"
+    try:
+        upload_to_blob(temp_path, blob_name)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        download_from_blob(blob_name, temp_path)
+    except Exception as storage_err:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return f"Error: Azure Storage failure: {str(storage_err)}"
+        
+    pdf_processor = None
+    try:
+        pdf_processor = PDFProcessor(temp_path)
+        total_pages = pdf_processor.get_total_pages()
+        pages_to_use = list(range(1, min(4, total_pages + 1)))
+        
+        images = pdf_processor.extract_images_from_pages(dpi=200, specific_pages=pages_to_use)
+        
+        azure_text = ""
+        if use_azure_di and config.AZURE_DI_KEY:
+            structured_pages = pdf_processor.get_structured_text_for_pages(
+                pages_to_use,
+                api_key=config.AZURE_DI_KEY,
+                endpoint=config.AZURE_DI_ENDPOINT
+            )
+            azure_text = "\n\n".join([f"=== PAGE {p['page_number']} ===\n{p['text']}" for p in structured_pages])
+            
+        generator = FormatGeneratorAgent(
+            anthropic_key=config.ANTHROPIC_API_KEY,
+            gemini_key=config.GEMINI_API_KEY
+        )
+        
+        code = generator.generate_format(
+            pdf_images=images,
+            short_name=short_name,
+            provider=config.FORMAT_GEN_AGENT,
+            model_name=config.FORMAT_GEN_MODEL,
+            azure_text=azure_text
+        )
+        
+        saved_path = generator.save_format(code, short_name)
+        return json.dumps({
+            "status": "success",
+            "message": f"Format generated and saved to {saved_path}",
+            "short_name": short_name,
+            "provider_used": config.FORMAT_GEN_AGENT,
+            "model_used": config.FORMAT_GEN_MODEL,
+            "azure_di_used": bool(azure_text)
+        })
+    except Exception as e:
+        return f"Error generating format: {str(e)}"
+    finally:
+        if pdf_processor:
+            try:
+                pdf_processor.close()
+            except Exception:
+                pass
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+        try:
+            delete_blob(blob_name)
+        except Exception:
+            pass
+
+# Mount the MCP server onto the main FastAPI app.
+app.mount("/", mcp_app)
 
 if __name__ == "__main__":
     import uvicorn

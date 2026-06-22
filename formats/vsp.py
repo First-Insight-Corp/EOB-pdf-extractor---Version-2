@@ -81,11 +81,11 @@ class Claim(BaseModel):
     )
     patient_account_number: Optional[str] = Field(
         None, 
-        description="The patient account number. CRITICAL POSITIONING: This value is located IMMEDIATELY BELOW the Patient Name. It can be SHORT (5 digits like '65049') or LONG (10 digits). Do NOT judge by length. Judge by POSITION: The line directly under 'Patient Name' is the Account Number."
+        description="The patient account number from the 'Pt Acct #' table column. HORIZONTAL TABLE LAYOUT: This field appears in a distinct table column to the RIGHT of the Patient Name column, not below it. It can be SHORT (5 digits like '65049') or LONG (8+ digits). Often appears empty or obscured in the PDF—if the 'Pt Acct #' column is blank but a Claim Number exists, leave this null and focus on extracting the Claim Number."
     )
     claim_number: Optional[str] = Field(
         None, 
-        description="The claim reference number. CRITICAL POSITIONING: This value is located BELOW the Patient Account Number (which is below the name). It can be SHORT or LONG. If a third line exists under the patient name, it is likely the Claim Number."
+        description="The claim reference number from the 'Claim Number' table column. HORIZONTAL TABLE LAYOUT: This value appears to the RIGHT of the Patient Account Number in the table. Format: Often displayed as 8 digits + 2 digits (e.g., '83163782 00' or '83163782|00'), which represents a 10-digit claim number (e.g., '8316378200'). Combine any space-separated segments into a single string. If only one number appears, map it to this field regardless of digit count."
     )
     service_date: Optional[str] = Field(
         None, 
@@ -206,11 +206,11 @@ SCHEMA_DESCRIPTION = """
 **CRITICAL**: Study each page's visual hierarchy in detail before extraction:
 1. **Scan for Section Markers**: Check PAGE HEADER (top 10 lines) for "Doctor:" or "Practice Name".
 2. **Identify Claim Blocks**: Blue/shaded header rows mark the start of each patient claim.
-3. **Analyze Vertical Stacking**: 
-   - **Line 1 (Header)**: Plan | Insured ID | Patient Name | Service Date
-   - **Line 2 (Below Header)**: Patient Account Number (IMMEDIATELY below Name)
-   - **Line 3 (Below Acct#)**: Claim Number (if present)
-4. **Apply Inheritance**: Doctor name from Page Header applies to ALL claims on that page.
+3.  **Analyze Horizontal Table Layout** (NOT vertical stacking):
+   - **Header Row**: Plan | Insured ID | Patient Name | Pt Acct # | Claim Number | Service Date | Proc Code | Units | Description | [Amounts] | Message Code(s)
+   - **Claim Data Row**: Values appear horizontally across the table, NOT vertically stacked
+   - **Key Columns**: The 'Pt Acct #' and 'Claim Number' are distinct table columns, not vertically positioned lines
+4.  **Apply Inheritance**: Doctor name from Page Header or claim block applies to ALL service lines within that claim block.
 
 ### VSP DOCUMENT STRUCTURE & VISUAL CUES:
 1.  **DOCUMENT-LEVEL HEADER (PAGE 1 ONLY)**:
@@ -221,18 +221,14 @@ SCHEMA_DESCRIPTION = """
     - **CRITICAL**: Do NOT ignore the top of Page 1. These values are global for the entire document.
 
 2.  **PAGE HEADER (Every Page)**: Often contains 'Doctor:' name.
-2.  **PATIENT CLAIM BLOCKS**:
-    *   **Header Row (Blue/Shaded)**: 
-        - **Left**: Plan Name
-        - **Center**: Insured ID, Patient Name
-        - **Service Date Retrieval**: 
-            - **MANDATORY**: Every claim block MUST have a `service_date`.
-            - Look at the **FIRST ROW** of the service table (left side). 
-            - If not found there, check the **SECOND ROW** or the **HEADER LINE** immediately above the table.
-            - Apply this date to the `service_date` field for the entire claim block.
-    *   **Line Below Name**: This is explicitly the **Patient Account Number**. It can be SHORT (5 digits) or LONG (10 digits). TRUST THE POSITION.
-    *   **Line Below Account#**: This is the **Claim Number**.
-    *   **Doctor Inheritance**: The Doctor's name appears at the top of the page OR at the start of a claim block. You **MUST** apply this name to every claim listed below it until a NEW 'Doctor:' header appears. Look at the PAGE HEADER for the primary doctor.
+2.  **PATIENT CLAIM BLOCKS (Horizontal Table)**:
+    *   **Header Row (Blue/Shaded Background)**: 
+        - **Columns**: Plan | Insured ID | Patient Name | Pt Acct # | Claim Number | Service Date | Proc Code | Units | Description | Billed | Total Comp | CoPay | Patient Pay | Lab Alloc | VSP Provider | Provider Payment | Message Code(s)
+        - **Data Extraction**: Extract values from each column horizontally, NOT vertically
+        - **Pt Acct # Column**: Often appears empty or unclear; if blank, set `patient_account_number` to null
+        - **Claim Number Column**: Format may appear as "8 digits 2 digits" (e.g., '83163782 00') — COMBINE into '8316378200' as a 10-digit number
+        - **Service Date**: MANDATORY for every claim. Appears in the 'Service Date' table column. Apply this date to ALL service lines in the claim.
+    *   **Doctor Inheritance**: The Doctor's name from the PAGE HEADER applies to ALL claims on that page. Look for "Doctor:" or "Doctor Payment Arrangement:" at the top of each page. If a new doctor name appears mid-page, apply it to subsequent claims.
 
 3.  **SERVICE LINE ITEMS (The "Body" of the Claim)**:
     *   **Location**: These rows appear vertically BETWEEN the "Claim Number" and the "Totals" row.
@@ -248,27 +244,29 @@ SCHEMA_DESCRIPTION = """
     *   **Content**: "Total VSP Check" amount.
     *   **Mapping**: Map this to the `total_vsp_check` field in metadata. Do NOT leave this null. If the document ends, find the final total.
 
-### IDENTIFIER DISAMBIGUATION & THE 10-DIGIT RULE (CRITICAL):
-VSP documents have specific stacking rules. You MUST follow this logic to avoid field swapping:
-1. **Patient Name** is the primary anchor.
-2. **THE 10-DIGIT RULE**: Any identifier that is exactly **10 digits** (e.g., '1767767000') is historically a **CLAIM NUMBER**. 
-3. **MAPPING PRIORITY**:
-   - If you see a name followed by ONE number: If it is 10 digits, map it to `claim_number`.
-   - If you see a name followed by TWO numbers: The first is `patient_account_number`, the second (usually 10 digits) is `claim_number`.
-4. **POSITIONAL CUES**:
-   - Line 1: Patient Name
-   - Line 2: Patient Account Number
-   - Line 3: Claim Number (PRIORITIZE THIS for 10-digit numbers)
+### IDENTIFIER EXTRACTION (Horizontal Table Layout):
+VSP documents use a horizontal table structure with distinct columns for identifiers. Follow these rules:
+1. **Column Order**: Plan | Insured ID | Patient Name | **Pt Acct #** | **Claim Number** | Service Date | [Details]
+2. **Patient Account Number** (`patient_account_number`):
+   - Extract from the **'Pt Acct #' column** in the table header
+   - Can be SHORT (5 digits, e.g., '65049') or LONG (8+ digits)
+   - If the column appears empty or has no visible value, set to null
+   - Do NOT combine with Claim Number
+3. **Claim Number** (`claim_number`):
+   - Extract from the **'Claim Number' column** in the table header
+   - Format often appears as "8 digits [space or pipe] 2 digits" (e.g., '83163782 00' or '83163782|00')
+   - **ALWAYS COMBINE** space/pipe-separated segments into a single 10-digit string: '8316378200'
+   - This is a MANDATORY field—extract it whenever the claim header row exists
+4. **THE 10-DIGIT RULE**: Claim numbers in VSP documents are typically 10 digits when properly parsed (combining any separators)
+5. **Priority**: Claim Number takes precedence. If only one identifier is visible in the table, map it to `claim_number`
 
-**Correct Mapping Examples:**
-*   **Case A (Short Acct, Long Claim):**
-    Name: SMITH, JOHN
-    Row 2: 65049     -> `patient_account_number`
-    Row 3: 1767767000 -> `claim_number`
-*   **Case B (10-Digit Claim Only):**
-    Name: DOE, JANE
-    Row 2: 1767767000 -> `claim_number` (Map to claim_number because it is 10 digits)
-    `patient_account_number`: null
+**Examples from Actual PDFs:**
+- **Claim Header**: CHOICE | XXXXXXX81 | BEALE, JOSHUA | [blank Pt Acct #] | 83163782|00
+  - `patient_account_number`: null (column blank)
+  - `claim_number`: "8316378200" (combine 83163782 + 00)
+- **Claim Header**: CHOICE | XXXXX4037 | DEFAZIO, ALAINA | [value] | 79322871 00
+  - `patient_account_number`: [value from Pt Acct # column]
+  - `claim_number`: "7932287100" (combine 79322871 + 00)
 
 ### IN-OFFICE FINISHING (IOF) - VISUAL EXTRACTION ONLY:
 **🚨🚨🚨 ABSOLUTE CRITICAL 🚨🚨🚨**
@@ -280,9 +278,10 @@ VSP documents have specific stacking rules. You MUST follow this logic to avoid 
 5. **Zero Tolerance**: Do not return an empty list if there are table rows visible on the last page.
 
 ### ZERO DATA LOSS RULES:
-*   **Doctors**: If 'treating_doctor' is null, re-scan the Page Header or block header. Apply to all claims below. (Refer to LESSONS/CONTEXT provided in the prompt).
-*   **Service Date**: Always present in the first row of services. Apply to all service lines in the claim.
-*   **Account Numbers**: Every claim must have one. Look below the name. (MANDATORY: Do not return null).
+*   **Doctors**: If 'treating_doctor' is null, re-scan the Page Header or claim block header. Apply to all claims below. (Refer to LESSONS/CONTEXT provided in the prompt).
+*   **Service Date**: Always present in the table's 'Service Date' column. Apply to all service lines in the claim.
+*   **Claim Number**: Mandatory extraction. Must combine space-separated identifiers (e.g., '83163782 00' → '8316378200'). Never null if claim header row exists.
+*   **Account Number**: Extract from 'Pt Acct #' column if present. If column is empty, return null (do not substitute with claim number).
 *   **Claim Totals**: Every claim MUST have a `claim_totals` object. If missing, retrieve from the 'Totals' row at the end of the patient block.
 *   **Final Global Total**: SEARCH THE LAST PAGE for "Total VSP Check". Map exactly to `total_vsp_check`. Do not leave as null if it exists visually.
 """

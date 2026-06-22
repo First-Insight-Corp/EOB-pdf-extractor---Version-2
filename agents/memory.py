@@ -106,8 +106,8 @@ class GlobalLearningMemory:
             
         if lesson_text not in self.lessons:
             self.lessons.append(lesson_text)
-            # Cap lessons to the last 25 to prevent prompt bloat while allowing growth.
-            if len(self.lessons) > 25:
+            # Cap lessons to the last 80 to prevent prompt bloat while allowing growth.
+            if len(self.lessons) > 80:
                 self.lessons.pop(0)
             logger.info(f"Learned NEW lesson (total: {len(self.lessons)}): {lesson_text}")
 

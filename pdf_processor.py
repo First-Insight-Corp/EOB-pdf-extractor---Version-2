@@ -4,6 +4,7 @@ import io
 import base64
 from typing import List, Dict, Tuple, Any, Optional
 import logging
+from config import config
 
 # Use centralized logging
 from logs_config import get_pdf_processor_logger
@@ -113,6 +114,7 @@ class PDFProcessor:
                 
                 # Convert to PNG bytes
                 img_data = pix.tobytes("png")
+                img_data = self._resize_image_if_needed(img_data, page_num)
                 img_str = base64.b64encode(img_data).decode()
                 base64_images.append(img_str)
                 
@@ -123,6 +125,40 @@ class PDFProcessor:
         except Exception as e:
             logger.error(f"Error converting PDF to images: {str(e)}")
             raise
+
+    def _resize_image_if_needed(self, img_data: bytes, page_num: int) -> bytes:
+        """Resize page image if either dimension exceeds configured max."""
+        max_dim = int(getattr(config, "MAX_IMAGE_DIMENSION", 4000) or 4000)
+        if max_dim <= 0:
+            max_dim = 4000
+
+        try:
+            with Image.open(io.BytesIO(img_data)) as img:
+                width, height = img.size
+                largest_dim = max(width, height)
+
+                if largest_dim <= max_dim:
+                    return img_data
+
+                scale = max_dim / float(largest_dim)
+                new_width = max(1, int(width * scale))
+                new_height = max(1, int(height * scale))
+
+                if hasattr(Image, "Resampling"):
+                    resized = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                else:
+                    resized = img.resize((new_width, new_height), Image.LANCZOS)
+
+                output = io.BytesIO()
+                resized.save(output, format="PNG", optimize=True)
+                logger.info(
+                    f"Resized page {page_num} image from {width}x{height} to {new_width}x{new_height} "
+                    f"(MAX_IMAGE_DIMENSION={max_dim})"
+                )
+                return output.getvalue()
+        except Exception as e:
+            logger.warning(f"Failed to resize page {page_num} image, using original: {str(e)}")
+            return img_data
     
     def get_page_batch(self, batch_size: int = 10) -> List[List[Dict[str, str]]]:
         """
